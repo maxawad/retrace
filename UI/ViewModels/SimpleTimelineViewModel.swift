@@ -351,14 +351,16 @@ enum CurrentFrameStillDisplayMode: Equatable {
     case none
 }
 
-/// Represents a block of consecutive frames from the same app
+/// Represents a block of consecutive frames from the same app on the same display
 public struct AppBlock: Identifiable, Sendable {
     // Use stable ID based on content to prevent unnecessary view recreation during infinite scroll
     public var id: String {
-        "\(bundleID ?? "nil")_\(startIndex)_\(endIndex)"
+        "\(bundleID ?? "nil")_\(displayStableID ?? displayName ?? "legacy-display")_\(startIndex)_\(endIndex)"
     }
     public let bundleID: String?
     public let appName: String?
+    public let displayStableID: String?
+    public let displayName: String?
     public let startIndex: Int
     public let endIndex: Int
     public let frameCount: Int
@@ -369,6 +371,30 @@ public struct AppBlock: Identifiable, Sendable {
 
     /// Time gap in seconds BEFORE this block (if > 2 minutes, a gap indicator should be shown)
     public let gapBeforeSeconds: TimeInterval?
+
+    public init(
+        bundleID: String?,
+        appName: String?,
+        startIndex: Int,
+        endIndex: Int,
+        frameCount: Int,
+        tagIDs: [Int64],
+        hasComments: Bool,
+        gapBeforeSeconds: TimeInterval?,
+        displayStableID: String? = nil,
+        displayName: String? = nil
+    ) {
+        self.bundleID = bundleID
+        self.appName = appName
+        self.displayStableID = displayStableID
+        self.displayName = displayName
+        self.startIndex = startIndex
+        self.endIndex = endIndex
+        self.frameCount = frameCount
+        self.tagIDs = tagIDs
+        self.hasComments = hasComments
+        self.gapBeforeSeconds = gapBeforeSeconds
+    }
 
     /// Calculate width based on current pixels per frame
     public func width(pixelsPerFrame: CGFloat) -> CGFloat {
@@ -2143,6 +2169,8 @@ public class SimpleTimelineViewModel: ObservableObject {
     private struct SnapshotFrameInput: Sendable {
         let bundleID: String?
         let appName: String?
+        let displayStableID: String?
+        let displayName: String?
         let segmentIDValue: Int64
         let timestamp: Date
         let videoPath: String?
@@ -2201,7 +2229,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         return snapshot
     }
 
-    /// App blocks grouped by consecutive bundle IDs
+    /// App blocks grouped by consecutive bundle IDs and display identity
     /// Note: Since we do server-side filtering, frames already contains only filtered results when filters are active
     public var appBlocks: [AppBlock] {
         appBlockSnapshot.blocks
@@ -2212,6 +2240,8 @@ public class SimpleTimelineViewModel: ObservableObject {
             SnapshotFrameInput(
                 bundleID: timelineFrame.frame.metadata.appBundleID,
                 appName: timelineFrame.frame.metadata.appName,
+                displayStableID: timelineFrame.frame.metadata.displayStableID,
+                displayName: timelineFrame.frame.metadata.displayName,
                 segmentIDValue: timelineFrame.frame.segmentID.value,
                 timestamp: timelineFrame.frame.timestamp,
                 videoPath: timelineFrame.videoInfo?.videoPath
@@ -3499,8 +3529,9 @@ public class SimpleTimelineViewModel: ObservableObject {
         let hasWindowFilter = !(filters.windowNameFilter?.isEmpty ?? true)
         let hasURLFilter = !(filters.browserUrlFilter?.isEmpty ?? true)
         let hasDateRange = !filters.effectiveDateRanges.isEmpty
+        let displayCount = filters.selectedDisplayStableIDs?.count ?? 0
 
-        return "active=\(filters.hasActiveFilters) count=\(filters.activeFilterCount) apps=\(appCount) tags=\(tagCount) appMode=\(filters.appFilterMode.rawValue) hidden=\(filters.hiddenFilter.rawValue) comments=\(filters.commentFilter.rawValue) window=\(hasWindowFilter) url=\(hasURLFilter) date=\(hasDateRange)"
+        return "active=\(filters.hasActiveFilters) count=\(filters.activeFilterCount) apps=\(appCount) tags=\(tagCount) displays=\(displayCount) appMode=\(filters.appFilterMode.rawValue) hidden=\(filters.hiddenFilter.rawValue) comments=\(filters.commentFilter.rawValue) window=\(hasWindowFilter) url=\(hasURLFilter) date=\(hasDateRange)"
     }
 
     private func logCmdFPlayheadState(
@@ -4033,7 +4064,9 @@ public class SimpleTimelineViewModel: ObservableObject {
             targetIndex = findClosestFrameIndex(to: targetDate)
         }
 
-        guard requestStillCurrent?() ?? true else { return nil }
+        // Replacing the loaded window can legitimately change currentTimelineFrame
+        // before the explicit navigation below; the stale-request checks above
+        // cover all async suspension points before this synchronous apply.
         navigateToFrame(targetIndex)
         return targetIndex
     }
@@ -4293,6 +4326,54 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         setLoadingState(false, reason: "reloadFramesAroundTimestamp.complete")
+    }
+
+    /// Restrict this timeline instance to a single connected display.
+    /// Used by multi-monitor companion windows; this is intentionally not counted
+    /// as a user-visible filter badge.
+    public func applyDisplayScope(stableID: String?) {
+        let normalizedStableID = stableID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayIDs: Set<String>?
+        if let normalizedStableID, !normalizedStableID.isEmpty {
+            displayIDs = [normalizedStableID]
+        } else {
+            displayIDs = nil
+        }
+
+        let didChangeScope =
+            filterCriteria.selectedDisplayStableIDs != displayIDs ||
+            pendingFilterCriteria.selectedDisplayStableIDs != displayIDs
+        var applied = normalizedTimelineFilterCriteria(filterCriteria)
+        var pending = normalizedTimelineFilterCriteria(pendingFilterCriteria)
+        applied.selectedDisplayStableIDs = displayIDs
+        pending.selectedDisplayStableIDs = displayIDs
+
+        filterCriteria = applied
+        pendingFilterCriteria = pending
+        if didChangeScope {
+            requiresFullReloadOnNextRefresh = true
+        }
+    }
+
+    /// Sync the playhead to the closest frame for this view model's display scope.
+    public func synchronizeToTimestamp(_ timestamp: Date) async {
+        guard !isLoading else { return }
+
+        if !frames.isEmpty {
+            let closestIndex = findClosestFrameIndex(to: timestamp)
+            let closestTimestamp = frames[closestIndex].frame.timestamp
+            let diff = abs(closestTimestamp.timeIntervalSince(timestamp))
+            if diff <= 600 {
+                if currentIndex != closestIndex {
+                    currentIndex = closestIndex
+                    loadImageIfNeeded()
+                }
+                return
+            }
+        }
+
+        await reloadFramesAroundTimestamp(timestamp, refreshPresentation: true)
     }
 
     // MARK: - Frame Selection & Deletion
@@ -6941,6 +7022,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         var segmentBoundaries: [Int] = []
 
         var currentBundleID: String? = frameList[0].bundleID
+        var currentDisplayStableID: String? = frameList[0].displayStableID
+        var currentDisplayName: String? = frameList[0].displayName
         var blockStartIndex = 0
         var currentBlockIndex = 0
         var gapBeforeCurrentBlock: TimeInterval? = nil
@@ -6956,6 +7039,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             let timelineFrame = frameList[index]
             let frameBundleID = timelineFrame.bundleID
+            let frameDisplayStableID = timelineFrame.displayStableID
 
             // Track boundary when video path changes from previous frame.
             if index > 0 {
@@ -6982,8 +7066,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             let hasSignificantGap = gapDuration >= Self.minimumGapThreshold
             let appChanged = frameBundleID != currentBundleID
+            let displayChanged = frameDisplayStableID != currentDisplayStableID
 
-            if (appChanged || hasSignificantGap) && index > 0 {
+            if (appChanged || displayChanged || hasSignificantGap) && index > 0 {
                 let filteredTagIDs = currentBlockTagIDs
                     .filter { tagID in
                         guard let hiddenTagID else { return true }
@@ -6999,11 +7084,15 @@ public class SimpleTimelineViewModel: ObservableObject {
                     frameCount: index - blockStartIndex,
                     tagIDs: filteredTagIDs,
                     hasComments: currentBlockHasComments,
-                    gapBeforeSeconds: gapBeforeCurrentBlock
+                    gapBeforeSeconds: gapBeforeCurrentBlock,
+                    displayStableID: currentDisplayStableID,
+                    displayName: currentDisplayName
                 ))
 
                 currentBlockIndex += 1
                 currentBundleID = frameBundleID
+                currentDisplayStableID = frameDisplayStableID
+                currentDisplayName = timelineFrame.displayName
                 blockStartIndex = index
                 gapBeforeCurrentBlock = hasSignificantGap ? gapDuration : nil
                 currentBlockTagIDs.removeAll(keepingCapacity: true)
@@ -7036,7 +7125,9 @@ public class SimpleTimelineViewModel: ObservableObject {
             frameCount: frameList.count - blockStartIndex,
             tagIDs: finalFilteredTagIDs,
             hasComments: currentBlockHasComments,
-            gapBeforeSeconds: gapBeforeCurrentBlock
+            gapBeforeSeconds: gapBeforeCurrentBlock,
+            displayStableID: currentDisplayStableID,
+            displayName: currentDisplayName
         ))
 
         return AppBlockSnapshot(
@@ -7543,7 +7634,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Clear all pending filters
     public func clearPendingFilters() {
+        let displayScope = filterCriteria.selectedDisplayStableIDs
         pendingFilterCriteria = .none
+        pendingFilterCriteria.selectedDisplayStableIDs = displayScope
         Log.debug("[Filter] Cleared pending filters", category: .ui)
     }
 
@@ -7617,8 +7710,11 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Clear filter state without triggering a reload
     /// Used by goToNow() which handles its own reload
     private func clearFilterState() {
+        let displayScope = filterCriteria.selectedDisplayStableIDs ?? pendingFilterCriteria.selectedDisplayStableIDs
         filterCriteria = .none
         pendingFilterCriteria = .none
+        filterCriteria.selectedDisplayStableIDs = displayScope
+        pendingFilterCriteria.selectedDisplayStableIDs = displayScope
         Log.debug("[Filter] Cleared all filters", category: .ui)
 
         // Save (clear) filter criteria cache immediately
@@ -7664,8 +7760,11 @@ public class SimpleTimelineViewModel: ObservableObject {
         Log.info("[Peek] Cached filtered state: \(frames.count) frames, index=\(currentIndex)", category: .ui)
 
         // Clear filters and load unfiltered timeline centered on current timestamp
+        let displayScope = filterCriteria.selectedDisplayStableIDs
         filterCriteria = .none
         pendingFilterCriteria = .none
+        filterCriteria.selectedDisplayStableIDs = displayScope
+        pendingFilterCriteria.selectedDisplayStableIDs = displayScope
         isPeeking = true
 
         Task {
@@ -8331,20 +8430,22 @@ public class SimpleTimelineViewModel: ObservableObject {
         if normalizedPendingCriteria != pendingFilterCriteria {
             pendingFilterCriteria = normalizedPendingCriteria
         }
+        var criteriaForCache = normalizedPendingCriteria
+        criteriaForCache.selectedDisplayStableIDs = nil
 
-        Log.debug("[FilterCache] saveFilterCriteria() called - pending.selectedApps=\(String(describing: normalizedPendingCriteria.selectedApps)), pending.hasActiveFilters=\(normalizedPendingCriteria.hasActiveFilters)", category: .ui)
+        Log.debug("[FilterCache] saveFilterCriteria() called - pending.selectedApps=\(String(describing: criteriaForCache.selectedApps)), pending.hasActiveFilters=\(criteriaForCache.hasActiveFilters)", category: .ui)
         // If no filters are active in pending, clear any cached filters to avoid restoring stale state
-        guard normalizedPendingCriteria.hasActiveFilters else {
+        guard criteriaForCache.hasActiveFilters else {
             Log.debug("[FilterCache] No active pending filters, clearing cache", category: .ui)
             clearCachedFilterCriteria()
             return
         }
 
         do {
-            let data = try JSONEncoder().encode(normalizedPendingCriteria)
+            let data = try JSONEncoder().encode(criteriaForCache)
             UserDefaults.standard.set(data, forKey: Self.cachedFilterCriteriaKey)
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.cachedFilterSavedAtKey)
-            Log.debug("[FilterCache] Saved pending filter criteria with selectedApps=\(String(describing: normalizedPendingCriteria.selectedApps))", category: .ui)
+            Log.debug("[FilterCache] Saved pending filter criteria with selectedApps=\(String(describing: criteriaForCache.selectedApps))", category: .ui)
         } catch {
             Log.warning("[FilterCache] Failed to save filter criteria: \(error)", category: .ui)
         }

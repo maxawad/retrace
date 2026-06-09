@@ -26,7 +26,7 @@ struct TimelineBlockIndicatorPresentation: Equatable {
 }
 
 /// Timeline tape view that scrolls horizontally with a fixed center playhead
-/// Groups consecutive frames by app and displays app icons
+/// Groups consecutive frames by app/display and displays app icons
 public struct TimelineTapeView: View {
 
     // MARK: - Properties
@@ -352,6 +352,7 @@ public struct TimelineTapeView: View {
                 hoveredBlockID = hovering ? block.id : (hoveredBlockID == block.id ? nil : hoveredBlockID)
             }
         }
+        .help(blockHelpText(for: block))
         .opacity(isHidingBlock ? 0.12 : 1.0)
         .animation(.easeInOut(duration: 0.16), value: collapseFactor)
     }
@@ -536,6 +537,15 @@ public struct TimelineTapeView: View {
             return Color.segmentColor(for: bundleID)
         }
         return Color.gray.opacity(0.5)
+    }
+
+    private func blockHelpText(for block: AppBlock) -> String {
+        let appText = block.appName ?? block.bundleID ?? "Unknown app"
+        guard let displayName = block.displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !displayName.isEmpty else {
+            return appText
+        }
+        return "\(appText) on \(displayName)"
     }
 
     private func appIcon(for bundleID: String) -> some View {

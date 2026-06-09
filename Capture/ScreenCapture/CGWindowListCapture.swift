@@ -397,6 +397,14 @@ public actor CGWindowListCapture {
         let resolvedAppBundleID = redactionSummary?.appBundleID ?? visibleWindowContext?.appBundleID
         let resolvedAppName = redactionSummary?.appName ?? visibleWindowContext?.appName
         let resolvedWindowName = redactionSummary == nil ? visibleWindowContext?.windowName : nil
+        let displayName = displayName(for: UInt32(displayID))
+        let displayIdentity = DisplayIdentity.fromRuntimeDisplayID(
+            UInt32(displayID),
+            name: displayName,
+            width: width,
+            height: height,
+            isMain: UInt32(displayID) == CGMainDisplayID()
+        )
 
         // Create captured frame
         let frame = CapturedFrame(
@@ -410,11 +418,22 @@ public actor CGWindowListCapture {
                 appName: resolvedAppName,
                 windowName: resolvedWindowName,
                 redactionReason: redactionSummary?.reason,
-                displayID: UInt32(displayID)
+                displayID: UInt32(displayID),
+                displayStableID: displayIdentity.stableID,
+                displayName: displayIdentity.name
             )
         )
 
         return frame
+    }
+
+    private func displayName(for displayID: UInt32) -> String? {
+        if displayID == CGMainDisplayID() {
+            return "Main Display"
+        }
+
+        guard displayID != 0 else { return nil }
+        return "Display \(displayID)"
     }
 
     /// Compute which window IDs should be excluded based on current config

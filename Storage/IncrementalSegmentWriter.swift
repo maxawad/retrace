@@ -34,6 +34,7 @@ public actor IncrementalSegmentWriter: SegmentWriter {
     private var encoderInitialized = false
     private var cancelled = false
     private var lastFrameTime: Date?
+    private var displayStableID: String?
 
     init(
         segmentID: VideoSegmentID,
@@ -85,6 +86,7 @@ public actor IncrementalSegmentWriter: SegmentWriter {
         if !encoderInitialized {
             frameWidth = frame.width
             frameHeight = frame.height
+            displayStableID = frame.metadata.displayStableID
 
             try await encoder.initialize(
                 width: frame.width,
@@ -151,7 +153,8 @@ public actor IncrementalSegmentWriter: SegmentWriter {
             fileSizeBytes: size,
             relativePath: relativePath,
             width: frameWidth,
-            height: frameHeight
+            height: frameHeight,
+            displayStableID: displayStableID
         )
     }
 

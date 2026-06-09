@@ -223,6 +223,18 @@ final class TimelineBlockNavigationTests: XCTestCase {
         XCTAssertEqual(viewModel.currentIndex, 2)
     }
 
+    func testAppBlocksSplitSameAppAcrossDisplays() {
+        let viewModel = makeViewModelWithFrames(
+            ["A", "A", "A"],
+            displayStableIDs: ["display:main", "display:external", "display:main"]
+        )
+
+        XCTAssertEqual(viewModel.appBlocks.count, 3)
+        XCTAssertEqual(viewModel.appBlocks.map(\.startIndex), [0, 1, 2])
+        XCTAssertEqual(viewModel.appBlocks.map(\.endIndex), [0, 1, 2])
+        XCTAssertEqual(viewModel.appBlocks.map(\.displayStableID), ["display:main", "display:external", "display:main"])
+    }
+
     func testNavigateToPreviousBlockStartIgnoresStaleWindowFetchAfterPlayheadMoves() async {
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
         let viewModel = makeViewModelWithFrames(["A", "A", "A", "B"], baseDate: baseDate)
@@ -271,11 +283,15 @@ final class TimelineBlockNavigationTests: XCTestCase {
 
     private func makeViewModelWithFrames(
         _ bundleIDs: [String],
-        baseDate: Date = Date(timeIntervalSince1970: 1_700_000_000)
+        baseDate: Date = Date(timeIntervalSince1970: 1_700_000_000),
+        displayStableIDs: [String?]? = nil
     ) -> SimpleTimelineViewModel {
         let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
 
         viewModel.frames = bundleIDs.enumerated().map { index, bundleID in
+            let displayStableID = displayStableIDs.flatMap { ids in
+                index < ids.count ? ids[index] : nil
+            }
             let frame = FrameReference(
                 id: FrameID(value: Int64(index + 1)),
                 timestamp: baseDate.addingTimeInterval(TimeInterval(index)),
@@ -284,7 +300,9 @@ final class TimelineBlockNavigationTests: XCTestCase {
                 metadata: FrameMetadata(
                     appBundleID: bundleID,
                     appName: bundleID,
-                    displayID: 1
+                    displayID: 1,
+                    displayStableID: displayStableID,
+                    displayName: displayStableID
                 )
             )
 

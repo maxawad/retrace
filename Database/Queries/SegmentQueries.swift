@@ -14,8 +14,8 @@ enum SegmentQueries {
         // We use relativePath for the same purpose
         let sql = """
             INSERT INTO video (
-                height, width, path, fileSize, frameRate, processingState
-            ) VALUES (?, ?, ?, ?, ?, ?);
+                height, width, path, fileSize, frameRate, processingState, displayStableId
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
             """
 
         var statement: OpaquePointer?
@@ -39,6 +39,7 @@ enum SegmentQueries {
         sqlite3_bind_double(statement, 5, 30.0)
         // processingState: 1 = in progress (still being written to), 0 = completed
         sqlite3_bind_int(statement, 6, 1)
+        bindTextOrNull(statement, 7, segment.displayStableID)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw DatabaseError.queryFailed(
@@ -185,11 +186,19 @@ enum SegmentQueries {
     /// Get an unfinalised video matching the given resolution
     /// Returns nil if no unfinalised video exists for this resolution
     /// Used to resume writing to an existing video when a frame with matching resolution comes in
-    static func getUnfinalisedByResolution(db: OpaquePointer, width: Int, height: Int) throws -> UnfinalisedVideo? {
+    static func getUnfinalisedByResolution(
+        db: OpaquePointer,
+        width: Int,
+        height: Int,
+        displayStableID: String? = nil
+    ) throws -> UnfinalisedVideo? {
         let sql = """
-            SELECT id, path, frameCount
+            SELECT id, path, frameCount, displayStableId
             FROM video
-            WHERE width = ? AND height = ? AND processingState = 1
+            WHERE width = ?
+              AND height = ?
+              AND processingState = 1
+              AND ((? IS NULL AND displayStableId IS NULL) OR displayStableId = ?)
             LIMIT 1;
             """
 
@@ -207,6 +216,8 @@ enum SegmentQueries {
 
         sqlite3_bind_int(statement, 1, Int32(width))
         sqlite3_bind_int(statement, 2, Int32(height))
+        bindTextOrNull(statement, 3, displayStableID)
+        bindTextOrNull(statement, 4, displayStableID)
 
         guard sqlite3_step(statement) == SQLITE_ROW else {
             return nil
@@ -218,13 +229,15 @@ enum SegmentQueries {
         }
         let path = String(cString: pathText)
         let frameCount = Int(sqlite3_column_int(statement, 2))
+        let displayStableID = getTextOrNil(statement!, 3)
 
         return UnfinalisedVideo(
             id: id,
             relativePath: path,
             frameCount: frameCount,
             width: width,
-            height: height
+            height: height,
+            displayStableID: displayStableID
         )
     }
 
@@ -232,7 +245,7 @@ enum SegmentQueries {
     /// processingState = 1 means video is still being written to
     static func getAllUnfinalised(db: OpaquePointer) throws -> [UnfinalisedVideo] {
         let sql = """
-            SELECT id, path, frameCount, width, height
+            SELECT id, path, frameCount, width, height, displayStableId
             FROM video
             WHERE processingState = 1;
             """
@@ -257,13 +270,15 @@ enum SegmentQueries {
             let frameCount = Int(sqlite3_column_int(statement, 2))
             let width = Int(sqlite3_column_int(statement, 3))
             let height = Int(sqlite3_column_int(statement, 4))
+            let displayStableID = getTextOrNil(statement!, 5)
 
             results.append(UnfinalisedVideo(
                 id: id,
                 relativePath: path,
                 frameCount: frameCount,
                 width: width,
-                height: height
+                height: height,
+                displayStableID: displayStableID
             ))
         }
 
@@ -274,7 +289,7 @@ enum SegmentQueries {
 
     static func getByID(db: OpaquePointer, id: VideoSegmentID) throws -> VideoSegment? {
         let sql = """
-            SELECT id, height, width, path, fileSize, frameCount, frameRate
+            SELECT id, height, width, path, fileSize, frameCount, frameRate, displayStableId
             FROM video
             WHERE id = ?;
             """
@@ -302,7 +317,7 @@ enum SegmentQueries {
 
     static func findByRelativePathStem(db: OpaquePointer, stem: String) throws -> VideoSegment? {
         let sql = """
-            SELECT id, height, width, path, fileSize, frameCount, frameRate
+            SELECT id, height, width, path, fileSize, frameCount, frameRate, displayStableId
             FROM video
             WHERE path = ?
                OR path = ?
@@ -342,7 +357,7 @@ enum SegmentQueries {
     static func getByTimestamp(db: OpaquePointer, timestamp: Date) throws -> VideoSegment? {
         // Query through frames to find the video
         let sql = """
-            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameCount, v.frameRate
+            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameCount, v.frameRate, v.displayStableId
             FROM video v
             INNER JOIN frame f ON f.videoId = v.id
             WHERE f.createdAt = ?
@@ -380,7 +395,7 @@ enum SegmentQueries {
         to endDate: Date
     ) throws -> [VideoSegment] {
         let sql = """
-            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameCount, v.frameRate
+            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameCount, v.frameRate, v.displayStableId
             FROM video v
             INNER JOIN frame f ON f.videoId = v.id
             WHERE f.createdAt >= ? AND f.createdAt <= ?
@@ -487,7 +502,7 @@ enum SegmentQueries {
     // MARK: - Helpers
 
     /// Parse a video row from the video table
-    /// Expected columns: id, height, width, path, fileSize, frameCount, frameRate
+    /// Expected columns: id, height, width, path, fileSize, frameCount, frameRate, displayStableId
     private static func parseVideoRow(statement: OpaquePointer) throws -> VideoSegment {
         // Column 0: id (INTEGER)
         let videoId = sqlite3_column_int64(statement, 0)
@@ -514,6 +529,9 @@ enum SegmentQueries {
         // Column 6: frameRate (currently unused by VideoSegment)
         _ = sqlite3_column_double(statement, 6)
 
+        // Column 7: displayStableId (nullable)
+        let displayStableID = getTextOrNil(statement, 7)
+
         // Note: The video table doesn't have startTime/endTime.
         // Those need to be queried from the frames table if needed.
         let startTime = Date(timeIntervalSince1970: 0)
@@ -528,7 +546,24 @@ enum SegmentQueries {
             relativePath: relativePath,
             width: width,
             height: height,
+            displayStableID: displayStableID,
             source: .native  // Retrace creates native videos
         )
+    }
+
+    private static func bindTextOrNull(_ statement: OpaquePointer?, _ index: Int32, _ value: String?) {
+        if let value {
+            sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
+        } else {
+            sqlite3_bind_null(statement, index)
+        }
+    }
+
+    private static func getTextOrNil(_ statement: OpaquePointer, _ index: Int32) -> String? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let text = sqlite3_column_text(statement, index) else {
+            return nil
+        }
+        return String(cString: text)
     }
 }

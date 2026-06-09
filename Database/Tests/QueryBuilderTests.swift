@@ -45,7 +45,8 @@ final class QueryBuilderTests: XCTestCase {
         endTime: Date? = nil,
         frameCount: Int = 100,
         fileSizeBytes: Int64 = 1024,
-        relativePath: String = "test.mp4"
+        relativePath: String = "test.mp4",
+        displayStableID: String? = nil
     ) -> VideoSegment {
         VideoSegment(
             id: id,
@@ -55,7 +56,8 @@ final class QueryBuilderTests: XCTestCase {
             fileSizeBytes: fileSizeBytes,
             relativePath: relativePath,
             width: 1920,
-            height: 1080
+            height: 1080,
+            displayStableID: displayStableID
         )
     }
 
@@ -187,6 +189,16 @@ final class QueryBuilderTests: XCTestCase {
         XCTAssertEqual(retrieved?.fileSizeBytes, 1024000)
         XCTAssertEqual(retrieved?.width, 1920)
         XCTAssertEqual(retrieved?.height, 1080)
+    }
+
+    func testSegmentQueries_DisplayStableID_RoundTrips() throws {
+        let stableDisplayID = "display:v123:m456:s789"
+        let segment = makeSegment(displayStableID: stableDisplayID)
+        let insertedID = try SegmentQueries.insert(db: db!, segment: segment)
+
+        let retrieved = try SegmentQueries.getByID(db: db!, id: VideoSegmentID(value: insertedID))
+
+        XCTAssertEqual(retrieved?.displayStableID, stableDisplayID)
     }
 
     func testSegmentQueries_GetByID_ReturnsNilForMissingID() throws {
@@ -428,6 +440,26 @@ final class QueryBuilderTests: XCTestCase {
         XCTAssertNil(retrieved?.metadata.appName)
         XCTAssertEqual(retrieved?.metadata.windowName, "GitHub - retrace")
         XCTAssertEqual(retrieved?.metadata.browserURL, "https://github.com/retrace")
+    }
+
+    func testFrameQueries_DisplayMetadata_RoundTrips() throws {
+        let segmentID = try createTestSegment()
+        let frame = try insertFrame(
+            makeFrame(
+                segmentID: segmentID,
+                metadata: FrameMetadata(
+                    displayID: 42,
+                    displayStableID: "display:v123:m456:s789",
+                    displayName: "Studio Display"
+                )
+            )
+        )
+
+        let retrieved = try FrameQueries.getByID(db: db!, id: frame.id)
+
+        XCTAssertEqual(retrieved?.metadata.displayID, 42)
+        XCTAssertEqual(retrieved?.metadata.displayStableID, "display:v123:m456:s789")
+        XCTAssertEqual(retrieved?.metadata.displayName, "Studio Display")
     }
 
     func testFrameQueries_Insert_WithNullMetadata_UsesSegmentMetadataWhenAvailable() throws {

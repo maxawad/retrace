@@ -1798,14 +1798,18 @@ public actor AppCoordinator {
             }
 
             do {
-                let resolutionKey = "\(frame.width)x\(frame.height)"
+                let resolutionKey = Self.videoWriterKey(for: frame)
                 var writerState: VideoWriterState
 
                 if var existingState = writersByResolution[resolutionKey] {
                     if existingState.frameCount >= maxFramesPerSegment {
                         try await finalizeWriter(&existingState, processingQueue: await services.processingQueue)
                         writersByResolution.removeValue(forKey: resolutionKey)
-                        writerState = try await createNewWriterState(width: frame.width, height: frame.height)
+                        writerState = try await createNewWriterState(
+                            width: frame.width,
+                            height: frame.height,
+                            displayStableID: frame.metadata.displayStableID
+                        )
                         writersByResolution[resolutionKey] = writerState
                     } else {
                         writerState = existingState
@@ -1813,12 +1817,17 @@ public actor AppCoordinator {
                 } else {
                     if let unfinalised = try await services.database.getUnfinalisedVideoByResolution(
                         width: frame.width,
-                        height: frame.height
+                        height: frame.height,
+                        displayStableID: frame.metadata.displayStableID
                     ), try await shouldResumeUnfinalisedVideo(unfinalised) {
                         Log.info("Resuming unfinalised video \(unfinalised.id) for resolution \(resolutionKey)", category: .app)
                         writerState = try await resumeWriterState(from: unfinalised)
                     } else {
-                        writerState = try await createNewWriterState(width: frame.width, height: frame.height)
+                        writerState = try await createNewWriterState(
+                            width: frame.width,
+                            height: frame.height,
+                            displayStableID: frame.metadata.displayStableID
+                        )
                     }
                     writersByResolution[resolutionKey] = writerState
                 }
@@ -2048,7 +2057,7 @@ public actor AppCoordinator {
                 // File write failures mean the active writer is no longer trustworthy.
                 // Stop recording instead of pretending capture is still healthy.
                 if case .fileWriteFailed = error {
-                    let resolutionKey = "\(frame.width)x\(frame.height)"
+                    let resolutionKey = Self.videoWriterKey(for: frame)
                     if let brokenWriter = writersByResolution[resolutionKey] {
                         let summary =
                             "File write failed for videoDBID=\(brokenWriter.videoDBID) at \(resolutionKey). " +
@@ -2451,7 +2460,23 @@ public actor AppCoordinator {
         return outputData as Data
     }
 
-    private func createNewWriterState(width: Int, height: Int) async throws -> VideoWriterState {
+    private static func videoWriterKey(for frame: CapturedFrame) -> String {
+        let displayKey: String
+        if let displayStableID = frame.metadata.displayStableID,
+           !displayStableID.isEmpty {
+            displayKey = displayStableID
+        } else {
+            displayKey = "runtime-display:\(frame.metadata.displayID)"
+        }
+
+        return "\(displayKey)|\(frame.width)x\(frame.height)"
+    }
+
+    private func createNewWriterState(
+        width: Int,
+        height: Int,
+        displayStableID: String?
+    ) async throws -> VideoWriterState {
         let writer = try await services.storage.createSegmentWriter()
         let relativePath = await writer.relativePath
 
@@ -2463,10 +2488,11 @@ public actor AppCoordinator {
             fileSizeBytes: 0,
             relativePath: relativePath,
             width: width,
-            height: height
+            height: height,
+            displayStableID: displayStableID
         )
         let videoDBID = try await services.database.insertVideoSegment(placeholderSegment)
-        Log.debug("New video segment created with DB ID: \(videoDBID) for resolution \(width)x\(height)", category: .app)
+        Log.debug("New video segment created with DB ID: \(videoDBID) for resolution \(width)x\(height) display=\(displayStableID ?? "legacy")", category: .app)
 
         return VideoWriterState(
             writer: writer,
@@ -2501,7 +2527,8 @@ public actor AppCoordinator {
             fileSizeBytes: 0,
             relativePath: relativePath,
             width: unfinalised.width,
-            height: unfinalised.height
+            height: unfinalised.height,
+            displayStableID: unfinalised.displayStableID
         )
         let videoDBID = try await services.database.insertVideoSegment(placeholderSegment)
 
@@ -3315,90 +3342,182 @@ public actor AppCoordinator {
     /// Get frames in a time range
     /// Seamlessly blends data from all sources via DataAdapter
     public func getFrames(from startDate: Date, to endDate: Date, limit: Int = 500, filters: FilterCriteria? = nil) async throws -> [FrameReference] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database if adapter not available
-            return try await services.database.getFrames(from: startDate, to: endDate, limit: limit)
+            let frames = try await services.database.getFrames(from: startDate, to: endDate, limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         }
 
-        return try await adapter.getFrames(from: startDate, to: endDate, limit: limit, filters: filters)
+        let frames = try await adapter.getFrames(from: startDate, to: endDate, limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
     }
 
     /// Get frames with video info in a time range (optimized - single query with JOINs)
     /// This is the preferred method for timeline views to avoid N+1 queries
     public func getFramesWithVideoInfo(from startDate: Date, to endDate: Date, limit: Int = 500, filters: FilterCriteria? = nil) async throws -> [FrameWithVideoInfo] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database (no video info for native)
-            let frames = try await services.database.getFrames(from: startDate, to: endDate, limit: limit)
-            return frames.map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
+            let frames = try await services.database.getFrames(from: startDate, to: endDate, limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
+                .map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
         }
 
-        return try await adapter.getFramesWithVideoInfo(from: startDate, to: endDate, limit: limit, filters: filters)
+        let frames = try await adapter.getFramesWithVideoInfo(from: startDate, to: endDate, limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrameInfo(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
     }
 
     /// Get the most recent frames across all sources
     /// Returns frames sorted by timestamp descending (newest first)
     public func getMostRecentFrames(limit: Int = 500, filters: FilterCriteria? = nil) async throws -> [FrameReference] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database
-            return try await services.database.getMostRecentFrames(limit: limit)
+            let frames = try await services.database.getMostRecentFrames(limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         }
 
-        return try await adapter.getMostRecentFrames(limit: limit, filters: filters)
+        let frames = try await adapter.getMostRecentFrames(limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
     }
 
     /// Get the most recent frames with video info (optimized - single query with JOINs)
     public func getMostRecentFramesWithVideoInfo(limit: Int = 500, filters: FilterCriteria? = nil) async throws -> [FrameWithVideoInfo] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database (no video info for native)
-            let frames = try await services.database.getMostRecentFrames(limit: limit)
-            return frames.map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
+            let frames = try await services.database.getMostRecentFrames(limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
+                .map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
         }
 
-        return try await adapter.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+        let frames = try await adapter.getMostRecentFramesWithVideoInfo(limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrameInfo(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
     }
 
     /// Get frames before a timestamp (for infinite scroll - loading older frames)
     /// Returns frames sorted by timestamp descending (newest first of the older batch)
     public func getFramesBefore(timestamp: Date, limit: Int = 300, filters: FilterCriteria? = nil) async throws -> [FrameReference] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database
-            return try await services.database.getFramesBefore(timestamp: timestamp, limit: limit)
+            let frames = try await services.database.getFramesBefore(timestamp: timestamp, limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         }
 
-        return try await adapter.getFramesBefore(timestamp: timestamp, limit: limit, filters: filters)
+        let frames = try await adapter.getFramesBefore(timestamp: timestamp, limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
     }
 
     /// Get frames with video info before a timestamp (optimized - single query with JOINs)
     public func getFramesWithVideoInfoBefore(timestamp: Date, limit: Int = 300, filters: FilterCriteria? = nil) async throws -> [FrameWithVideoInfo] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database (no video info for native)
-            let frames = try await services.database.getFramesBefore(timestamp: timestamp, limit: limit)
-            return frames.map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
+            let frames = try await services.database.getFramesBefore(timestamp: timestamp, limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
+                .map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
         }
 
-        return try await adapter.getFramesWithVideoInfoBefore(timestamp: timestamp, limit: limit, filters: filters)
+        let frames = try await adapter.getFramesWithVideoInfoBefore(timestamp: timestamp, limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrameInfo(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
     }
 
     /// Get frames after a timestamp (for infinite scroll - loading newer frames)
     /// Returns frames sorted by timestamp ascending (oldest first of the newer batch)
     public func getFramesAfter(timestamp: Date, limit: Int = 300, filters: FilterCriteria? = nil) async throws -> [FrameReference] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database
-            return try await services.database.getFramesAfter(timestamp: timestamp, limit: limit)
+            let frames = try await services.database.getFramesAfter(timestamp: timestamp, limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         }
 
-        return try await adapter.getFramesAfter(timestamp: timestamp, limit: limit, filters: filters)
+        let frames = try await adapter.getFramesAfter(timestamp: timestamp, limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
     }
 
     /// Get frames with video info after a timestamp (optimized - single query with JOINs)
     public func getFramesWithVideoInfoAfter(timestamp: Date, limit: Int = 300, filters: FilterCriteria? = nil) async throws -> [FrameWithVideoInfo] {
+        let connectedDisplayStableIDs = await connectedDisplayStableIDsForVisibilityFilter()
+        let queryLimit = displayVisibilityQueryLimit(limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
         guard let adapter = await services.dataAdapter else {
             // Fallback to database (no video info for native)
-            let frames = try await services.database.getFramesAfter(timestamp: timestamp, limit: limit)
-            return frames.map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
+            let frames = try await services.database.getFramesAfter(timestamp: timestamp, limit: queryLimit)
+            return filterVisibleConnectedDisplayFrames(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
+                .map { FrameWithVideoInfo(frame: $0, videoInfo: nil) }
         }
 
-        return try await adapter.getFramesWithVideoInfoAfter(timestamp: timestamp, limit: limit, filters: filters)
+        let frames = try await adapter.getFramesWithVideoInfoAfter(timestamp: timestamp, limit: queryLimit, filters: filters)
+        return filterVisibleConnectedDisplayFrameInfo(frames, limit: limit, connectedDisplayStableIDs: connectedDisplayStableIDs)
+    }
+
+    private func connectedDisplayStableIDsForVisibilityFilter() async -> Set<String>? {
+        do {
+            let displays = try await services.capture.getAvailableDisplays()
+            let stableIDs = displays.compactMap(\.stableID).filter { !$0.isEmpty }
+            return stableIDs.isEmpty ? nil : Set(stableIDs)
+        } catch {
+            Log.warning(
+                "[AppCoordinator] Failed to enumerate connected displays for timeline filtering: \(error.localizedDescription)",
+                category: .app
+            )
+            return nil
+        }
+    }
+
+    private func filterVisibleConnectedDisplayFrameInfo(
+        _ frames: [FrameWithVideoInfo],
+        limit: Int,
+        connectedDisplayStableIDs: Set<String>?
+    ) -> [FrameWithVideoInfo] {
+        Array(
+            frames
+                .filter { isFrameVisibleForConnectedDisplays($0.frame, connectedDisplayStableIDs: connectedDisplayStableIDs) }
+                .prefix(max(0, limit))
+        )
+    }
+
+    private func filterVisibleConnectedDisplayFrames(
+        _ frames: [FrameReference],
+        limit: Int,
+        connectedDisplayStableIDs: Set<String>?
+    ) -> [FrameReference] {
+        Array(
+            frames
+                .filter { isFrameVisibleForConnectedDisplays($0, connectedDisplayStableIDs: connectedDisplayStableIDs) }
+                .prefix(max(0, limit))
+        )
+    }
+
+    private func displayVisibilityQueryLimit(
+        _ limit: Int,
+        connectedDisplayStableIDs: Set<String>?
+    ) -> Int {
+        guard connectedDisplayStableIDs != nil else { return limit }
+        let normalizedLimit = max(0, limit)
+        guard normalizedLimit > 0 else { return 0 }
+        return min(max(normalizedLimit, normalizedLimit * 4), 2_000)
+    }
+
+    private func isFrameVisibleForConnectedDisplays(
+        _ frame: FrameReference,
+        connectedDisplayStableIDs: Set<String>?
+    ) -> Bool {
+        guard let connectedDisplayStableIDs else { return true }
+        guard let displayStableID = frame.metadata.displayStableID,
+              !displayStableID.isEmpty else {
+            return true
+        }
+        return connectedDisplayStableIDs.contains(displayStableID)
     }
 
     /// Get the timestamp of the most recent frame across all sources

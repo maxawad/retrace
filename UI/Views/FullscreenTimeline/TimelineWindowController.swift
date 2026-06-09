@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import App
 import Shared
 import CoreGraphics
@@ -34,6 +35,18 @@ public class TimelineWindowController: NSObject {
     private var timelineViewModel: SimpleTimelineViewModel?
     private var pendingTimelineViewModelWaiters: [CheckedContinuation<SimpleTimelineViewModel, Never>] = []
     private var hostingView: NSView?
+    private var primaryPresentationDisplayID: CGDirectDisplayID?
+    private struct CompanionTimelinePresentation {
+        let runtimeDisplayID: CGDirectDisplayID
+        let stableDisplayID: String
+        let displayName: String?
+        let window: NSWindow
+        let hostingView: NSView
+        let viewModel: SimpleTimelineViewModel
+    }
+    private var companionPresentations: [CGDirectDisplayID: CompanionTimelinePresentation] = [:]
+    private var companionSyncCancellable: AnyCancellable?
+    private var companionSyncTask: Task<Void, Never>?
     private var deferredHostingViewDetachTask: Task<Void, Never>?
     private var tapeShowAnimationTask: Task<Void, Never>?
     private var liveModeCaptureTask: Task<Void, Never>?
@@ -652,6 +665,38 @@ public class TimelineWindowController: NSObject {
         return "[" + displayIDs.sorted().map(String.init).joined(separator: ",") + "]"
     }
 
+    private static func runtimeDisplayID(for screen: NSScreen?) -> CGDirectDisplayID? {
+        screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+    }
+
+    private static func displayName(for displayID: CGDirectDisplayID) -> String {
+        displayID == CGMainDisplayID() ? "Main Display" : "Display \(displayID)"
+    }
+
+    private static func displayIdentity(for screen: NSScreen) -> DisplayIdentity? {
+        guard let displayID = runtimeDisplayID(for: screen) else { return nil }
+        return DisplayIdentity.fromRuntimeDisplayID(
+            displayID,
+            name: displayName(for: displayID),
+            width: CGDisplayPixelsWide(displayID),
+            height: CGDisplayPixelsHigh(displayID),
+            isMain: displayID == CGMainDisplayID()
+        )
+    }
+
+    private func applyPrimaryDisplayScope(on screen: NSScreen, to viewModel: SimpleTimelineViewModel) {
+        guard let identity = Self.displayIdentity(for: screen) else {
+            viewModel.applyDisplayScope(stableID: nil)
+            return
+        }
+
+        viewModel.applyDisplayScope(stableID: identity.stableID)
+        Log.info(
+            "[TIMELINE-MULTI-DISPLAY] Primary timeline scoped displayName=\(identity.name ?? "nil") runtimeID=\(identity.runtimeDisplayID.map(String.init) ?? "nil") stableID=\(identity.stableID)",
+            category: .ui
+        )
+    }
+
     private func stopObservingApplicationActivation() {
         guard let workspaceActivationObserver else { return }
         NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
@@ -954,6 +999,7 @@ public class TimelineWindowController: NSObject {
             window.ignoresMouseEvents = true
             window.orderOut(nil)
         }
+        closeCompanionTimelines()
         presentationState = .hidden
         Self.setEmergencyTimelineVisible(false)
         lastHiddenAt = Date()
@@ -1432,6 +1478,7 @@ public class TimelineWindowController: NSObject {
 
         // Check if we have a prepared metadata state ready
         if isPrepared, let viewModel = timelineViewModel {
+            applyPrimaryDisplayScope(on: targetScreen, to: viewModel)
             mountPresentationIfNeeded(
                 on: targetScreen,
                 coordinator: coordinator,
@@ -1464,6 +1511,7 @@ public class TimelineWindowController: NSObject {
         // Fallback: Create presentation and view model from scratch (prerender disabled or unavailable).
         let viewModel = SimpleTimelineViewModel(coordinator: coordinator)
         setTimelineViewModel(viewModel)
+        applyPrimaryDisplayScope(on: targetScreen, to: viewModel)
         prepareLiveModeState(shouldUseLiveMode: shouldUseLiveMode, viewModel: viewModel)
         viewModel.isTapeHidden = true
         tapeShowAnimationTask?.cancel()
@@ -1547,6 +1595,12 @@ public class TimelineWindowController: NSObject {
             DispatchQueue.main.async { [weak hostingView] in
                 hostingView?.layoutSubtreeIfNeeded()
             }
+        }
+        if let primaryViewModel = timelineViewModel {
+            showCompanionTimelinesIfNeeded(
+                coordinator: coordinator,
+                primaryViewModel: primaryViewModel
+            )
         }
         let openElapsedMs = (CFAbsoluteTimeGetCurrent() - showStartTime) * 1000
         Log.recordLatency(
@@ -1674,6 +1728,17 @@ public class TimelineWindowController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             self.window?.makeKey()
         }
+    }
+
+    private func showCompanionTimelinesIfNeeded(
+        coordinator: AppCoordinator,
+        primaryViewModel: SimpleTimelineViewModel
+    ) {
+        showCompanionTimelines(
+            excludingPrimaryDisplayID: primaryPresentationDisplayID,
+            coordinator: coordinator,
+            primaryViewModel: primaryViewModel
+        )
     }
 
     /// Hide the timeline overlay
@@ -1950,6 +2015,7 @@ public class TimelineWindowController: NSObject {
         viewModel: SimpleTimelineViewModel
     ) {
         if let window {
+            primaryPresentationDisplayID = Self.runtimeDisplayID(for: screen)
             if window.frame != screen.frame {
                 window.setFrame(screen.frame, display: false)
             }
@@ -1985,6 +2051,139 @@ public class TimelineWindowController: NSObject {
 
         self.window = window
         self.hostingView = hostingView
+        self.primaryPresentationDisplayID = Self.runtimeDisplayID(for: screen)
+    }
+
+    private func showCompanionTimelines(
+        excludingPrimaryDisplayID primaryDisplayID: CGDirectDisplayID?,
+        coordinator: AppCoordinator,
+        primaryViewModel: SimpleTimelineViewModel
+    ) {
+        guard let coordinatorWrapper else { return }
+
+        closeCompanionTimelines()
+
+        let companionScreens = NSScreen.screens.filter { screen in
+            guard let displayID = Self.runtimeDisplayID(for: screen) else { return false }
+            return displayID != primaryDisplayID
+        }
+
+        guard !companionScreens.isEmpty else {
+            Log.info(
+                "[TIMELINE-MULTI-DISPLAY] No companion screens available screenCount=\(NSScreen.screens.count) primaryDisplayID=\(primaryDisplayID.map(String.init) ?? "nil")",
+                category: .ui
+            )
+            return
+        }
+
+        for screen in companionScreens {
+            guard let displayID = Self.runtimeDisplayID(for: screen),
+                  let identity = Self.displayIdentity(for: screen) else {
+                continue
+            }
+
+            let companionViewModel = SimpleTimelineViewModel(coordinator: coordinator)
+            companionViewModel.applyDisplayScope(stableID: identity.stableID)
+            companionViewModel.areControlsHidden = true
+            companionViewModel.isTapeHidden = true
+            companionViewModel.setPresentationWorkEnabled(true, reason: "timeline companion show")
+
+            let companionWindow = createWindow(for: screen)
+            companionWindow.ignoresMouseEvents = true
+            companionWindow.alphaValue = 1
+            companionWindow.collectionBehavior.remove(.moveToActiveSpace)
+            companionWindow.collectionBehavior.insert(.canJoinAllSpaces)
+            companionWindow.collectionBehavior.insert(.fullScreenAuxiliary)
+
+            let timelineView = SimpleTimelineView(
+                coordinator: coordinator,
+                viewModel: companionViewModel,
+                showsTimelineChrome: false,
+                onClose: { [weak self] in
+                    self?.hide()
+                }
+            )
+            .environmentObject(coordinatorWrapper)
+
+            let hostingView = FirstMouseHostingView(rootView: timelineView)
+            hostingView.frame = companionWindow.contentView?.bounds ?? .zero
+            hostingView.autoresizingMask = [.width, .height]
+            companionWindow.contentView?.addSubview(hostingView)
+            companionWindow.orderFrontRegardless()
+
+            companionPresentations[displayID] = CompanionTimelinePresentation(
+                runtimeDisplayID: displayID,
+                stableDisplayID: identity.stableID,
+                displayName: identity.name,
+                window: companionWindow,
+                hostingView: hostingView,
+                viewModel: companionViewModel
+            )
+
+            Log.info(
+                "[TIMELINE-MULTI-DISPLAY] Companion timeline shown displayName=\(identity.name ?? "nil") runtimeID=\(displayID) stableID=\(identity.stableID)",
+                category: .ui
+            )
+
+            Task { @MainActor [weak self, weak companionViewModel, weak primaryViewModel] in
+                guard let self, let companionViewModel else { return }
+                await companionViewModel.loadMostRecentFrame()
+                guard !Task.isCancelled,
+                      self.companionPresentations[displayID]?.viewModel === companionViewModel,
+                      let timestamp = primaryViewModel?.currentTimestamp else {
+                    return
+                }
+                await companionViewModel.synchronizeToTimestamp(timestamp)
+            }
+        }
+
+        startCompanionTimelineSync(primaryViewModel: primaryViewModel)
+    }
+
+    private func startCompanionTimelineSync(primaryViewModel: SimpleTimelineViewModel) {
+        companionSyncCancellable?.cancel()
+        companionSyncCancellable = primaryViewModel.$currentIndex
+            .removeDuplicates()
+            .debounce(for: .milliseconds(80), scheduler: RunLoop.main)
+            .sink { [weak self, weak primaryViewModel] _ in
+                Task { @MainActor [weak self, weak primaryViewModel] in
+                    guard let self,
+                          let timestamp = primaryViewModel?.currentTimestamp else {
+                        return
+                    }
+                    self.syncCompanionTimelines(to: timestamp)
+                }
+            }
+
+        if let timestamp = primaryViewModel.currentTimestamp {
+            syncCompanionTimelines(to: timestamp)
+        }
+    }
+
+    private func syncCompanionTimelines(to timestamp: Date) {
+        companionSyncTask?.cancel()
+        let presentations = Array(companionPresentations.values)
+        companionSyncTask = Task { @MainActor in
+            for presentation in presentations {
+                guard !Task.isCancelled else { return }
+                await presentation.viewModel.synchronizeToTimestamp(timestamp)
+            }
+        }
+    }
+
+    private func closeCompanionTimelines() {
+        companionSyncCancellable?.cancel()
+        companionSyncCancellable = nil
+        companionSyncTask?.cancel()
+        companionSyncTask = nil
+
+        for presentation in companionPresentations.values {
+            presentation.viewModel.setPresentationWorkEnabled(false, reason: "timeline companion close")
+            presentation.window.orderOut(nil)
+            presentation.hostingView.removeFromSuperview()
+            presentation.window.close()
+        }
+        companionPresentations.removeAll(keepingCapacity: false)
     }
 
     private func destroyMountedPresentation() {
@@ -1992,6 +2191,7 @@ public class TimelineWindowController: NSObject {
         cancelWindowFadeIn(reason: "destroyMountedPresentation")
         cancelDeferredSearchOverlayRestore()
         cancelDeferredLiveActivation()
+        closeCompanionTimelines()
         liveModeCaptureTask?.cancel()
         liveModeCaptureTask = nil
         stopObservingApplicationActivation()
@@ -2443,6 +2643,7 @@ public class TimelineWindowController: NSObject {
         }
 
         let viewModel = ensurePreparedViewModel(coordinator: coordinator)
+        applyPrimaryDisplayScope(on: targetScreen, to: viewModel)
 
         mountPresentationIfNeeded(
             on: targetScreen,
@@ -2497,6 +2698,12 @@ public class TimelineWindowController: NSObject {
             DispatchQueue.main.async { [weak hostingView] in
                 hostingView?.layoutSubtreeIfNeeded()
             }
+        }
+        if let primaryViewModel = timelineViewModel {
+            showCompanionTimelinesIfNeeded(
+                coordinator: coordinator,
+                primaryViewModel: primaryViewModel
+            )
         }
 
         if let viewModel = timelineViewModel {

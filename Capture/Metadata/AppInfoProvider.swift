@@ -25,6 +25,11 @@ struct AppInfoProvider: Sendable {
         preferredDisplayID: CGDirectDisplayID? = nil
     ) async -> FrameMetadata {
         let displayID = preferredDisplayID ?? CGMainDisplayID()
+        let displayIdentity = DisplayIdentity.fromRuntimeDisplayID(
+            displayID,
+            name: displayName(for: displayID),
+            isMain: displayID == CGMainDisplayID()
+        )
         // Prefer top-most visible window metadata from CGWindowList to keep app/window
         // context aligned with the captured pixels, especially during rapid app switches.
         if let visibleWindow = getTopVisibleWindowContext(preferredDisplayID: preferredDisplayID) {
@@ -55,7 +60,9 @@ struct AppInfoProvider: Sendable {
                 appName: appName,
                 windowName: windowName,
                 browserURL: browserURL,
-                displayID: displayID
+                displayID: displayID,
+                displayStableID: displayIdentity.stableID,
+                displayName: displayIdentity.name
             )
             return metadata
         }
@@ -64,7 +71,11 @@ struct AppInfoProvider: Sendable {
         guard let frontApp = await MainActor.run(body: {
             NSWorkspace.shared.frontmostApplication
         }) else {
-            return FrameMetadata(displayID: displayID)
+            return FrameMetadata(
+                displayID: displayID,
+                displayStableID: displayIdentity.stableID,
+                displayName: displayIdentity.name
+            )
         }
 
         var bundleID = frontApp.bundleIdentifier
@@ -94,12 +105,23 @@ struct AppInfoProvider: Sendable {
             appName: appName,
             windowName: windowName,
             browserURL: browserURL,
-            displayID: displayID
+            displayID: displayID,
+            displayStableID: displayIdentity.stableID,
+            displayName: displayIdentity.name
         )
         return metadata
     }
 
     // MARK: - Private Helpers
+
+    private func displayName(for displayID: UInt32) -> String? {
+        if displayID == CGMainDisplayID() {
+            return "Main Display"
+        }
+
+        guard displayID != 0 else { return nil }
+        return "Display \(displayID)"
+    }
 
     /// Get the title of the focused window.
     /// Uses AX first, then falls back to CGWindow metadata for apps/PWAs that

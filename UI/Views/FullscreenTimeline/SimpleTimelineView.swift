@@ -28,14 +28,21 @@ public struct SimpleTimelineView: View {
     @AppStorage("showFrameIDs", store: timelineSettingsStore) private var showFrameCard = SettingsDefaults.showFrameIDs
 
     let coordinator: AppCoordinator
+    let showsTimelineChrome: Bool
     let onClose: () -> Void
 
     // MARK: - Initialization
 
     /// Initialize with an external view model (scroll events handled by TimelineWindowController)
-    public init(coordinator: AppCoordinator, viewModel: SimpleTimelineViewModel, onClose: @escaping () -> Void) {
+    public init(
+        coordinator: AppCoordinator,
+        viewModel: SimpleTimelineViewModel,
+        showsTimelineChrome: Bool = true,
+        onClose: @escaping () -> Void
+    ) {
         self.coordinator = coordinator
         self.viewModel = viewModel
+        self.showsTimelineChrome = showsTimelineChrome
         self.onClose = onClose
     }
 
@@ -75,38 +82,40 @@ public struct SimpleTimelineView: View {
                 // Search-result highlights should sit above the frame, but below timeline controls/tape.
                 searchHighlightOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
 
-                // Bottom blur + gradient backdrop (behind timeline controls)
-                VStack {
-                    Spacer()
-                    // Blur with built-in tint (NSVisualEffectView needs content to blur)
-                    PureBlurView(radius: 50)
-                        .frame(height: TimelineScaleFactor.blurBackdropHeight)
-                        .mask(
-                            LinearGradient(
-                                stops: [
-                                    .init(color: Color.white.opacity(0.0), location: 0.0),
-                                    .init(color: Color.white.opacity(0.03), location: 0.1),
-                                    .init(color: Color.white.opacity(0.08), location: 0.2),
-                                    .init(color: Color.white.opacity(0.15), location: 0.3),
-                                    .init(color: Color.white.opacity(0.35), location: 0.4),
-                                    .init(color: Color.white.opacity(0.6), location: 0.5),
-                                    .init(color: Color.white.opacity(0.85), location: 0.6),
-                                    .init(color: Color.white.opacity(0.95), location: 0.7),
-                                    .init(color: Color.white.opacity(1.0), location: 0.8),
-                                    .init(color: Color.white.opacity(0.85), location: 1.0)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
+                if showsTimelineChrome {
+                    // Bottom blur + gradient backdrop (behind timeline controls)
+                    VStack {
+                        Spacer()
+                        // Blur with built-in tint (NSVisualEffectView needs content to blur)
+                        PureBlurView(radius: 50)
+                            .frame(height: TimelineScaleFactor.blurBackdropHeight)
+                            .mask(
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: Color.white.opacity(0.0), location: 0.0),
+                                        .init(color: Color.white.opacity(0.03), location: 0.1),
+                                        .init(color: Color.white.opacity(0.08), location: 0.2),
+                                        .init(color: Color.white.opacity(0.15), location: 0.3),
+                                        .init(color: Color.white.opacity(0.35), location: 0.4),
+                                        .init(color: Color.white.opacity(0.6), location: 0.5),
+                                        .init(color: Color.white.opacity(0.85), location: 0.6),
+                                        .init(color: Color.white.opacity(0.95), location: 0.7),
+                                        .init(color: Color.white.opacity(1.0), location: 0.8),
+                                        .init(color: Color.white.opacity(0.85), location: 1.0)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
                             )
-                        )
+                    }
+                    .allowsHitTesting(false)
+                    .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
+                    .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
                 }
-                .allowsHitTesting(false)
-                .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
-                .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
 
                 // Dismiss overlay for date search panel (Cmd+G) - clicking outside closes it
                 // Must be BEFORE TimelineTapeView in ZStack so it's behind the panel
-                if viewModel.isDateSearchActive && !viewModel.isCalendarPickerVisible {
+                if showsTimelineChrome && viewModel.isDateSearchActive && !viewModel.isCalendarPickerVisible {
                     Color.clear
                         .contentShape(Rectangle())
                         .ignoresSafeArea()
@@ -117,7 +126,7 @@ public struct SimpleTimelineView: View {
 
                 // Dismiss overlay for calendar picker - clicking outside closes it
                 // Must be BEFORE TimelineTapeView in ZStack so it's behind the picker
-                if viewModel.isCalendarPickerVisible {
+                if showsTimelineChrome && viewModel.isCalendarPickerVisible {
                     Color.clear
                         .contentShape(Rectangle())
                         .ignoresSafeArea()
@@ -129,7 +138,7 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Dismiss overlay for zoom slider - clicking outside closes it
-                if viewModel.isZoomSliderExpanded {
+                if showsTimelineChrome && viewModel.isZoomSliderExpanded {
                     Color.clear
                         .contentShape(Rectangle())
                         .ignoresSafeArea()
@@ -140,21 +149,23 @@ public struct SimpleTimelineView: View {
                         }
                 }
 
-                // Timeline tape overlay at bottom
-                VStack {
-                    Spacer()
-                    TimelineTapeView(
-                        viewModel: viewModel,
-                        width: geometry.size.width,
-                        coordinator: coordinator
-                    )
-                    .padding(.bottom, TimelineScaleFactor.tapeBottomPadding)
+                if showsTimelineChrome {
+                    // Timeline tape overlay at bottom
+                    VStack {
+                        Spacer()
+                        TimelineTapeView(
+                            viewModel: viewModel,
+                            width: geometry.size.width,
+                            coordinator: coordinator
+                        )
+                        .padding(.bottom, TimelineScaleFactor.tapeBottomPadding)
+                    }
+                    .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
+                    .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
                 }
-                .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
-                .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
 
                 // Persistent controls toggle button (stays visible when controls are hidden)
-                if viewModel.areControlsHidden {
+                if showsTimelineChrome && viewModel.areControlsHidden {
                     VStack {
                         Spacer()
                         HStack {
@@ -167,29 +178,44 @@ public struct SimpleTimelineView: View {
                     .transition(.opacity.animation(.easeInOut(duration: 0.2).delay(0.1)))
                 }
 
-                // Debug frame card, OCR status indicator, and developer actions menu (top-left)
-                VStack {
-                    HStack(spacing: 8) {
-                        if showFrameCard {
-                            DebugFrameIDBadge(viewModel: viewModel)
+                if showsTimelineChrome {
+                    // Debug frame card, OCR status indicator, and developer actions menu (top-left)
+                    VStack {
+                        HStack(spacing: 8) {
+                            CurrentDisplayBadge(viewModel: viewModel)
+                            if showFrameCard {
+                                DebugFrameIDBadge(viewModel: viewModel)
+                            }
+                            // OCR status indicator (only visible when OCR is in progress)
+                            OCRStatusIndicator(viewModel: viewModel)
+                            #if DEBUG
+                            DeveloperActionsMenu(viewModel: viewModel, onClose: onClose)
+                            #endif
+                            Spacer()
+                                .allowsHitTesting(false)
                         }
-                        // OCR status indicator (only visible when OCR is in progress)
-                        OCRStatusIndicator(viewModel: viewModel)
-                        #if DEBUG
-                        DeveloperActionsMenu(viewModel: viewModel, onClose: onClose)
-                        #endif
                         Spacer()
                             .allowsHitTesting(false)
                     }
-                    Spacer()
-                        .allowsHitTesting(false)
+                    .padding(.spacingL)
+                    .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
+                    .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
+                } else {
+                    VStack {
+                        HStack {
+                            CurrentDisplayBadge(viewModel: viewModel)
+                            Spacer()
+                                .allowsHitTesting(false)
+                        }
+                        Spacer()
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.spacingL)
+                    .allowsHitTesting(false)
                 }
-                .padding(.spacingL)
-                .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
-                .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
 
                 #if DEBUG
-                if viewModel.showBrowserURLDebugWindow {
+                if showsTimelineChrome && viewModel.showBrowserURLDebugWindow {
                     DebugBrowserURLWindow(
                         browserURL: currentBrowserURLForDebugWindow,
                         panelPosition: $browserURLDebugWindowPosition,
@@ -202,7 +228,7 @@ public struct SimpleTimelineView: View {
                 #endif
 
                 // Reset zoom button (top center)
-                if viewModel.isFrameZoomed {
+                if showsTimelineChrome && viewModel.isFrameZoomed {
                     VStack {
                         ResetZoomButton(viewModel: viewModel)
                             .padding(.top, 12) // Extra margin for MacBook notch
@@ -216,7 +242,7 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Peek mode banner (top center, below reset zoom if both visible)
-                if viewModel.isPeeking {
+                if showsTimelineChrome && viewModel.isPeeking {
                     VStack {
                         PeekModeBanner(viewModel: viewModel)
                             .padding(.top, viewModel.isFrameZoomed ? 60 : 12) // Below reset zoom button if visible
@@ -230,7 +256,7 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Persistent redaction reason banner (top center)
-                if let redactionContext = currentRedactionContext {
+                if showsTimelineChrome, let redactionContext = currentRedactionContext {
                     VStack {
                         RedactionReasonBanner(
                             reason: redactionContext.reason,
@@ -250,18 +276,20 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Top-right controls (in-frame search + close)
-                VStack {
-                    HStack {
+                if showsTimelineChrome {
+                    VStack {
+                        HStack {
+                            Spacer()
+                                .allowsHitTesting(false)
+                            topRightControls
+                        }
                         Spacer()
                             .allowsHitTesting(false)
-                        topRightControls
                     }
-                    Spacer()
-                        .allowsHitTesting(false)
+                    .padding(.spacingL)
+                    .padding(.top, 12) // Match ResetZoomButton vertical row alignment
+                    .zIndex(100)
                 }
-                .padding(.spacingL)
-                .padding(.top, 12) // Match ResetZoomButton vertical row alignment
-                .zIndex(100)
 
 
                 // Loading overlay
@@ -277,7 +305,7 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Delete confirmation dialog
-                if viewModel.showDeleteConfirmation {
+                if showsTimelineChrome && viewModel.showDeleteConfirmation {
                     DeleteConfirmationDialog(
                         segmentFrameCount: viewModel.selectedSegmentFrameCount,
                         onDeleteFrame: {
@@ -293,15 +321,21 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Search overlay (Cmd+K) - uses persistent searchViewModel to preserve results
-                searchOverlay
+                if showsTimelineChrome {
+                    searchOverlay
+                }
 
                 // OCR debug overlay (dev setting)
-                ocrDebugOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
+                if showsTimelineChrome {
+                    ocrDebugOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
+                }
 
-                topHintOverlay(shouldRenderSearchHighlightControlsHint: shouldRenderSearchHighlightControlsHint)
+                if showsTimelineChrome {
+                    topHintOverlay(shouldRenderSearchHighlightControlsHint: shouldRenderSearchHighlightControlsHint)
+                }
 
                 // Filter panel (floating, anchored to filter button position)
-                if viewModel.isFilterPanelVisible {
+                if showsTimelineChrome && viewModel.isFilterPanelVisible {
                     // Dismiss overlay for filter panel and any open dropdown
                     Color.black.opacity(0.001)
                         .ignoresSafeArea()
@@ -335,7 +369,7 @@ public struct SimpleTimelineView: View {
 
                 // Timeline segment context menu (for right-click on timeline tape)
                 // Placed at the end of ZStack to ensure it renders above all other content
-                if viewModel.showTimelineContextMenu {
+                if showsTimelineChrome && viewModel.showTimelineContextMenu {
                     TimelineSegmentContextMenu(
                         viewModel: viewModel,
                         isPresented: $viewModel.showTimelineContextMenu,
@@ -344,7 +378,7 @@ public struct SimpleTimelineView: View {
                     )
                 }
 
-                if isCommentSubmenuMounted {
+                if showsTimelineChrome && isCommentSubmenuMounted {
                     Color.black.opacity(0.35)
                         .opacity(commentSubmenuVisibility)
                         .ignoresSafeArea()
@@ -366,7 +400,7 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Toast feedback overlay (centered, larger for errors)
-                if viewModel.toastMessage != nil {
+                if showsTimelineChrome && viewModel.toastMessage != nil {
                     let isErrorToast = viewModel.toastTone == .error
                     let toastAccentColor = isErrorToast ? Color.red : Color.green
 
@@ -395,7 +429,7 @@ public struct SimpleTimelineView: View {
                 }
 
                 // Delete undo action banner (interactive)
-                if let undoMessage = viewModel.pendingDeleteUndoMessage {
+                if showsTimelineChrome, let undoMessage = viewModel.pendingDeleteUndoMessage {
                     VStack {
                         HStack(spacing: 10) {
                             Image(systemName: "trash.fill")
@@ -6107,6 +6141,57 @@ struct OCRDebugOverlay: View {
         .background(Color.black.opacity(0.7))
         .cornerRadius(6)
         .position(x: actualFrameRect.maxX - 70, y: actualFrameRect.origin.y + 50)
+    }
+}
+
+// MARK: - Current Display Badge
+
+/// Shows which physical display the current historical frame came from.
+struct CurrentDisplayBadge: View {
+    @ObservedObject var viewModel: SimpleTimelineViewModel
+
+    private var displayLabel: String? {
+        guard let metadata = viewModel.currentFrame?.metadata else { return nil }
+
+        if let displayName = metadata.displayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !displayName.isEmpty {
+            return displayName
+        }
+
+        guard metadata.displayID > 0 else { return nil }
+        return "Display \(metadata.displayID)"
+    }
+
+    private var displayHelpText: String {
+        guard let label = displayLabel else { return "Display" }
+        if let stableID = viewModel.currentFrame?.metadata.displayStableID,
+           !stableID.isEmpty {
+            return "\(label)\n\(stableID)"
+        }
+        return label
+    }
+
+    var body: some View {
+        if let displayLabel {
+            HStack(spacing: 6) {
+                Image(systemName: "display")
+                    .font(.system(size: 11 * TimelineScaleFactor.current, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.72))
+
+                Text(displayLabel)
+                    .font(.system(size: 12 * TimelineScaleFactor.current, weight: .medium))
+                    .foregroundColor(.white.opacity(0.86))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 132 * TimelineScaleFactor.current, alignment: .leading)
+            }
+            .padding(.horizontal, 10 * TimelineScaleFactor.current)
+            .padding(.vertical, 6 * TimelineScaleFactor.current)
+            .timelineGlassSurface(.chip, cornerRadius: 8 * TimelineScaleFactor.current)
+            .help(displayHelpText)
+            .transition(.opacity.combined(with: .scale(scale: 0.94)))
+        }
     }
 }
 

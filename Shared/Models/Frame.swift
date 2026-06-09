@@ -26,6 +26,98 @@ public struct FrameID: Hashable, Codable, Sendable, Identifiable {
 
 // MARK: - Frame Metadata
 
+/// Stable display identity used to correlate the same monitor across hotplug
+/// events where CoreGraphics runtime display IDs may change.
+public struct DisplayIdentity: Codable, Sendable, Equatable, Hashable {
+    public let stableID: String
+    public let runtimeDisplayID: UInt32?
+    public let name: String?
+    public let vendorNumber: UInt32?
+    public let modelNumber: UInt32?
+    public let serialNumber: UInt32?
+    public let width: Int?
+    public let height: Int?
+    public let isMain: Bool?
+
+    public init(
+        stableID: String,
+        runtimeDisplayID: UInt32? = nil,
+        name: String? = nil,
+        vendorNumber: UInt32? = nil,
+        modelNumber: UInt32? = nil,
+        serialNumber: UInt32? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        isMain: Bool? = nil
+    ) {
+        self.stableID = stableID
+        self.runtimeDisplayID = runtimeDisplayID
+        self.name = name
+        self.vendorNumber = vendorNumber
+        self.modelNumber = modelNumber
+        self.serialNumber = serialNumber
+        self.width = width
+        self.height = height
+        self.isMain = isMain
+    }
+
+    public static func stableID(
+        vendorNumber: UInt32,
+        modelNumber: UInt32,
+        serialNumber: UInt32,
+        width: Int,
+        height: Int,
+        name: String?
+    ) -> String {
+        if serialNumber != 0 {
+            return "display:v\(vendorNumber):m\(modelNumber):s\(serialNumber)"
+        }
+
+        let normalizedName = name?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+
+        if let normalizedName, !normalizedName.isEmpty {
+            return "display:v\(vendorNumber):m\(modelNumber):name\(normalizedName):\(width)x\(height)"
+        }
+
+        return "display:v\(vendorNumber):m\(modelNumber):\(width)x\(height)"
+    }
+
+    public static func fromRuntimeDisplayID(
+        _ displayID: UInt32,
+        name: String? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        isMain: Bool? = nil
+    ) -> DisplayIdentity {
+        let vendorNumber = CGDisplayVendorNumber(displayID)
+        let modelNumber = CGDisplayModelNumber(displayID)
+        let serialNumber = CGDisplaySerialNumber(displayID)
+        let resolvedWidth = width ?? CGDisplayPixelsWide(displayID)
+        let resolvedHeight = height ?? CGDisplayPixelsHigh(displayID)
+        return DisplayIdentity(
+            stableID: stableID(
+                vendorNumber: vendorNumber,
+                modelNumber: modelNumber,
+                serialNumber: serialNumber,
+                width: resolvedWidth,
+                height: resolvedHeight,
+                name: name
+            ),
+            runtimeDisplayID: displayID,
+            name: name,
+            vendorNumber: vendorNumber,
+            modelNumber: modelNumber,
+            serialNumber: serialNumber,
+            width: resolvedWidth,
+            height: resolvedHeight,
+            isMain: isMain
+        )
+    }
+}
+
 /// Coarse-grained reason a frame capture was triggered.
 public enum FrameCaptureTrigger: String, Codable, Sendable, Equatable {
     case window
@@ -56,6 +148,13 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
     /// Display ID that was captured
     public let displayID: UInt32
 
+    /// Stable display identity that should survive monitor unplug/replug when
+    /// CoreGraphics exposes enough hardware metadata.
+    public let displayStableID: String?
+
+    /// Human-readable display name captured alongside the stable ID.
+    public let displayName: String?
+
     /// Mouse position in frame pixel coordinates (top-left origin), when captured.
     public let mousePosition: CGPoint?
 
@@ -67,6 +166,8 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
         redactionReason: String? = nil,
         captureTrigger: FrameCaptureTrigger? = nil,
         displayID: UInt32 = 0,
+        displayStableID: String? = nil,
+        displayName: String? = nil,
         mousePosition: CGPoint? = nil
     ) {
         self.appBundleID = appBundleID
@@ -76,6 +177,8 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
         self.redactionReason = redactionReason
         self.captureTrigger = captureTrigger
         self.displayID = displayID
+        self.displayStableID = displayStableID
+        self.displayName = displayName
         self.mousePosition = mousePosition
     }
 
@@ -214,6 +317,7 @@ public struct VideoSegment: Codable, Sendable, Equatable {
     public let relativePath: String  // Relative to storage root
     public let width: Int
     public let height: Int
+    public let displayStableID: String?
     public let source: FrameSource
 
     public init(
@@ -225,6 +329,7 @@ public struct VideoSegment: Codable, Sendable, Equatable {
         relativePath: String,
         width: Int,
         height: Int,
+        displayStableID: String? = nil,
         source: FrameSource = .native
     ) {
         self.id = id
@@ -235,6 +340,7 @@ public struct VideoSegment: Codable, Sendable, Equatable {
         self.relativePath = relativePath
         self.width = width
         self.height = height
+        self.displayStableID = displayStableID
         self.source = source
     }
 
@@ -281,6 +387,9 @@ public struct FrameVideoInfo: Sendable, Equatable, Codable {
 
     /// Video height in pixels (optional - for aspect ratio calculation)
     public let height: Int?
+
+    /// Stable display identity for the video segment, if known.
+    public let displayStableID: String?
 
     /// Whether the video file has been finalized (processingState = 0)
     /// If true, the video is complete and can be read regardless of file size
@@ -356,6 +465,7 @@ public struct FrameVideoInfo: Sendable, Equatable, Codable {
         frameRate: Double,
         width: Int? = nil,
         height: Int? = nil,
+        displayStableID: String? = nil,
         isVideoFinalized: Bool = true,
         videoReencodedAt: Date? = nil,
         fileSizeBytes: Int64? = nil,
@@ -366,6 +476,7 @@ public struct FrameVideoInfo: Sendable, Equatable, Codable {
         self.frameRate = frameRate
         self.width = width
         self.height = height
+        self.displayStableID = displayStableID
         self.isVideoFinalized = isVideoFinalized
         self.videoReencodedAt = videoReencodedAt
         self.fileSizeBytes = fileSizeBytes
@@ -429,16 +540,31 @@ public struct UnfinalisedVideo: Sendable, Equatable {
     /// Video height in pixels
     public let height: Int
 
+    /// Stable display identity for the unfinalised video, if known.
+    public let displayStableID: String?
+
     /// Resolution string for use as dictionary key
     public var resolutionKey: String {
         "\(width)x\(height)"
     }
 
-    public init(id: Int64, relativePath: String, frameCount: Int, width: Int, height: Int) {
+    public var writerKey: String {
+        "\(displayStableID ?? "legacy")|\(width)x\(height)"
+    }
+
+    public init(
+        id: Int64,
+        relativePath: String,
+        frameCount: Int,
+        width: Int,
+        height: Int,
+        displayStableID: String? = nil
+    ) {
         self.id = id
         self.relativePath = relativePath
         self.frameCount = frameCount
         self.width = width
         self.height = height
+        self.displayStableID = displayStableID
     }
 }

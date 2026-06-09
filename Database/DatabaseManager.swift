@@ -945,10 +945,27 @@ public actor DatabaseManager: DatabaseProtocol {
     // MARK: - Unfinalised Video Operations (Multi-Resolution Support)
 
     public func getUnfinalisedVideoByResolution(width: Int, height: Int) async throws -> UnfinalisedVideo? {
+        try await getUnfinalisedVideoByResolution(
+            width: width,
+            height: height,
+            displayStableID: nil
+        )
+    }
+
+    public func getUnfinalisedVideoByResolution(
+        width: Int,
+        height: Int,
+        displayStableID: String?
+    ) async throws -> UnfinalisedVideo? {
         guard let db = db else {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
-        return try SegmentQueries.getUnfinalisedByResolution(db: db, width: width, height: height)
+        return try SegmentQueries.getUnfinalisedByResolution(
+            db: db,
+            width: width,
+            height: height,
+            displayStableID: displayStableID
+        )
     }
 
     public func getAllUnfinalisedVideos() async throws -> [UnfinalisedVideo] {

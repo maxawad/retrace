@@ -92,6 +92,9 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
     /// Selected data sources (nil = all sources)
     public var selectedSources: Set<FrameSource>?
 
+    /// Internal display scope used by multi-monitor timeline presentation (nil = all displays).
+    public var selectedDisplayStableIDs: Set<String>?
+
     /// How to handle hidden segments
     public var hiddenFilter: HiddenFilter
 
@@ -125,6 +128,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         selectedApps: Set<String>? = nil,
         appFilterMode: AppFilterMode = .include,
         selectedSources: Set<FrameSource>? = nil,
+        selectedDisplayStableIDs: Set<String>? = nil,
         hiddenFilter: HiddenFilter = .hide,
         commentFilter: CommentFilter = .allFrames,
         selectedTags: Set<Int64>? = nil,
@@ -138,6 +142,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         self.selectedApps = selectedApps
         self.appFilterMode = appFilterMode
         self.selectedSources = selectedSources
+        self.selectedDisplayStableIDs = selectedDisplayStableIDs
         self.hiddenFilter = hiddenFilter
         self.commentFilter = commentFilter
         self.selectedTags = selectedTags
@@ -200,6 +205,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         case selectedApps
         case appFilterMode
         case selectedSources
+        case selectedDisplayStableIDs
         case hiddenFilter
         case commentFilter
         case selectedTags
@@ -216,6 +222,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         selectedApps = try container.decodeIfPresent(Set<String>.self, forKey: .selectedApps)
         appFilterMode = try container.decodeIfPresent(AppFilterMode.self, forKey: .appFilterMode) ?? .include
         selectedSources = try container.decodeIfPresent(Set<FrameSource>.self, forKey: .selectedSources)
+        selectedDisplayStableIDs = try container.decodeIfPresent(Set<String>.self, forKey: .selectedDisplayStableIDs)
         hiddenFilter = try container.decodeIfPresent(HiddenFilter.self, forKey: .hiddenFilter) ?? .hide
         commentFilter = try container.decodeIfPresent(CommentFilter.self, forKey: .commentFilter) ?? .allFrames
         selectedTags = try container.decodeIfPresent(Set<Int64>.self, forKey: .selectedTags)
@@ -232,6 +239,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         try container.encodeIfPresent(selectedApps, forKey: .selectedApps)
         try container.encode(appFilterMode, forKey: .appFilterMode)
         try container.encodeIfPresent(selectedSources, forKey: .selectedSources)
+        try container.encodeIfPresent(selectedDisplayStableIDs, forKey: .selectedDisplayStableIDs)
         try container.encode(hiddenFilter, forKey: .hiddenFilter)
         try container.encode(commentFilter, forKey: .commentFilter)
         try container.encodeIfPresent(selectedTags, forKey: .selectedTags)

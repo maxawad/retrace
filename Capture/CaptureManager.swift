@@ -176,8 +176,8 @@ public actor CaptureManager: CaptureProtocol {
     private let now: @Sendable () -> Date
 
     private var currentConfig: CaptureConfig
-    private var lastKeptFrame: CapturedFrame?
-    private var lastKeptMousePosition: CGPoint?
+    private var lastKeptFrameByDisplayKey: [String: CapturedFrame] = [:]
+    private var lastKeptMousePositionByDisplayKey: [String: CGPoint] = [:]
     private var _isCapturing = false
 
     private var dedupedFrameContinuation: AsyncStream<CapturedFrame>.Continuation?
@@ -316,8 +316,8 @@ public actor CaptureManager: CaptureProtocol {
         dedupedFrameContinuation = nil
         _frameStream = nil
 
-        lastKeptFrame = nil
-        lastKeptMousePosition = nil
+        lastKeptFrameByDisplayKey = [:]
+        lastKeptMousePositionByDisplayKey = [:]
         lastAcceptedWindowChangeSignature = nil
         updateCaptureMemoryLedger(currentFrameBytes: 0)
         currentCaptureDisplayID = nil
@@ -397,8 +397,8 @@ public actor CaptureManager: CaptureProtocol {
         latestWindowChangeEvent = nil
         deferredDisplaySyncTask?.cancel()
         deferredDisplaySyncTask = nil
-        lastKeptFrame = nil
-        lastKeptMousePosition = nil
+        lastKeptFrameByDisplayKey = [:]
+        lastKeptMousePositionByDisplayKey = [:]
         lastAcceptedWindowChangeSignature = nil
         updateCaptureMemoryLedger(currentFrameBytes: 0)
         totalCapturedBytes = 0
@@ -675,31 +675,42 @@ public actor CaptureManager: CaptureProtocol {
         }
 
         let captureAttemptStartedAt = now()
-        let displayID = await displayIDForCapture(trigger: capture.trigger)
-        currentCaptureDisplayID = displayID
+        let activeDisplayID = await displayIDForCapture(trigger: capture.trigger)
+        currentCaptureDisplayID = activeDisplayID
 
-        let frame = await cgWindowListCapture.captureFrame(displayID: displayID)
-        let captureAttemptCompletedAt = now()
-        if let frame {
-            lastActualCaptureTime = captureAttemptCompletedAt
-            if let windowChangeEvent = capture.windowChangeEvent {
-                let shouldDropFrame = shouldDropWindowChangeCapture(
-                    event: windowChangeEvent,
-                    capturedMetadata: frame.metadata
-                )
-                if shouldDropFrame {
-                    scheduleNextIntervalCapture(from: captureAttemptCompletedAt)
-                    if capture.trigger == .windowChange {
-                        await syncCaptureDisplayIfNeeded()
-                        scheduleDisplaySyncCheck()
-                    }
-                    return
-                }
+        let displayIDs = await displayIDsForCapture(trigger: capture.trigger, activeDisplayID: activeDisplayID)
+        var capturedFrames: [CapturedFrame] = []
+        capturedFrames.reserveCapacity(displayIDs.count)
+        for displayID in displayIDs {
+            if let frame = await cgWindowListCapture.captureFrame(displayID: displayID) {
+                capturedFrames.append(frame)
             }
-            if let windowChangeSignature = capture.windowChangeSignature {
+        }
+
+        let captureAttemptCompletedAt = now()
+        if !capturedFrames.isEmpty {
+            lastActualCaptureTime = captureAttemptCompletedAt
+            var keptAnyFrame = false
+
+            for frame in capturedFrames {
+                if let windowChangeEvent = capture.windowChangeEvent,
+                   frame.metadata.displayID == activeDisplayID {
+                    let shouldDropFrame = shouldDropWindowChangeCapture(
+                        event: windowChangeEvent,
+                        capturedMetadata: frame.metadata
+                    )
+                    if shouldDropFrame {
+                        continue
+                    }
+                }
+
+                await handleCapturedFrame(frame, trigger: capture.trigger)
+                keptAnyFrame = true
+            }
+
+            if keptAnyFrame, let windowChangeSignature = capture.windowChangeSignature {
                 lastAcceptedWindowChangeSignature = windowChangeSignature
             }
-            await handleCapturedFrame(frame, trigger: capture.trigger)
             scheduleNextIntervalCapture(from: captureAttemptCompletedAt)
         } else {
             scheduleNextIntervalCapture(from: max(captureAttemptStartedAt, captureAttemptCompletedAt))
@@ -709,6 +720,31 @@ public actor CaptureManager: CaptureProtocol {
             await syncCaptureDisplayIfNeeded()
             scheduleDisplaySyncCheck()
         }
+    }
+
+    private func displayIDsForCapture(trigger: CaptureTrigger, activeDisplayID: UInt32) async -> [UInt32] {
+        do {
+            let displays = try await displayMonitor.getAvailableDisplays()
+            let displayIDs = displays
+                .sorted { lhs, rhs in
+                    if lhs.id == activeDisplayID { return true }
+                    if rhs.id == activeDisplayID { return false }
+                    if lhs.isMain != rhs.isMain { return lhs.isMain }
+                    return lhs.id < rhs.id
+                }
+                .map(\.id)
+            if !displayIDs.isEmpty {
+                var seen = Set<UInt32>()
+                return displayIDs.filter { seen.insert($0).inserted }
+            }
+        } catch {
+            Log.warning(
+                "[CaptureManager] Failed to enumerate displays for \(Self.triggerLogDescription(for: trigger)); falling back to active display: \(error.localizedDescription)",
+                category: .capture
+            )
+        }
+
+        return [activeDisplayID]
     }
 
     private func displayIDForCapture(trigger: CaptureTrigger) async -> UInt32 {
@@ -852,24 +888,31 @@ public actor CaptureManager: CaptureProtocol {
         let currentMousePosition = currentConfig.keepFramesOnMouseMovement
             ? Self.mousePositionWithinCapturedFrame(frame)
             : nil
+        let displayKey = Self.displayDeduplicationKey(for: frame)
+        let previousFrame = lastKeptFrameByDisplayKey[displayKey]
+        let previousMousePosition = lastKeptMousePositionByDisplayKey[displayKey]
 
         if currentConfig.adaptiveCaptureEnabled {
-            let similarity = lastKeptFrame.map { deduplicator.computeSimilarity(frame, $0) }
+            let similarity = previousFrame.map { deduplicator.computeSimilarity(frame, $0) }
             let keepBySimilarity = deduplicator.shouldKeepFrame(
                 frame,
-                comparedTo: lastKeptFrame,
+                comparedTo: previousFrame,
                 threshold: currentConfig.deduplicationThreshold
             )
             let keepByMouseMovement = Self.shouldKeepFrameForMouseMovement(
                 enabled: currentConfig.keepFramesOnMouseMovement,
-                previousMousePosition: lastKeptMousePosition,
+                previousMousePosition: previousMousePosition,
                 currentMousePosition: currentMousePosition
             )
             let shouldKeep = keepBySimilarity || keepByMouseMovement
 
             if shouldKeep {
-                lastKeptFrame = frame
-                lastKeptMousePosition = currentMousePosition
+                lastKeptFrameByDisplayKey[displayKey] = frame
+                if let currentMousePosition {
+                    lastKeptMousePositionByDisplayKey[displayKey] = currentMousePosition
+                } else {
+                    lastKeptMousePositionByDisplayKey.removeValue(forKey: displayKey)
+                }
                 let enrichedFrame = await enrichFrameMetadata(frame, trigger: trigger)
                 dedupedFrameContinuation?.yield(enrichedFrame)
 
@@ -932,8 +975,12 @@ public actor CaptureManager: CaptureProtocol {
                 captureStartTime: stats.captureStartTime,
                 lastFrameTime: enrichedFrame.timestamp
             )
-            lastKeptFrame = frame
-            lastKeptMousePosition = currentMousePosition
+            lastKeptFrameByDisplayKey[displayKey] = frame
+            if let currentMousePosition {
+                lastKeptMousePositionByDisplayKey[displayKey] = currentMousePosition
+            } else {
+                lastKeptMousePositionByDisplayKey.removeValue(forKey: displayKey)
+            }
 
             if trigger == .mouseClick {
                 reportMouseClickOutcome(.captured)
@@ -971,7 +1018,9 @@ public actor CaptureManager: CaptureProtocol {
 
     private func updateCaptureMemoryLedger(currentFrameBytes: Int64) {
         let normalizedCurrentFrameBytes = max(0, currentFrameBytes)
-        let lastKeptFrameBytes = Int64(lastKeptFrame?.imageData.count ?? 0)
+        let lastKeptFrameBytes = lastKeptFrameByDisplayKey.values.reduce(Int64(0)) { partialResult, frame in
+            partialResult + Int64(frame.imageData.count)
+        }
 
         MemoryLedger.set(
             tag: Self.memoryLedgerCurrentFrameTag,
@@ -984,7 +1033,7 @@ public actor CaptureManager: CaptureProtocol {
         MemoryLedger.set(
             tag: Self.memoryLedgerLastKeptFrameTag,
             bytes: lastKeptFrameBytes,
-            count: lastKeptFrame == nil ? 0 : 1,
+            count: lastKeptFrameByDisplayKey.count,
             unit: "frames",
             function: "capture.deduplication",
             kind: "reference-frame",
@@ -995,6 +1044,15 @@ public actor CaptureManager: CaptureProtocol {
             category: .capture,
             minIntervalSeconds: Self.memoryLedgerSummaryIntervalSeconds
         )
+    }
+
+    private static func displayDeduplicationKey(for frame: CapturedFrame) -> String {
+        if let displayStableID = frame.metadata.displayStableID,
+           !displayStableID.isEmpty {
+            return displayStableID
+        }
+
+        return "runtime-display:\(frame.metadata.displayID)"
     }
 
     static func shouldKeepFrameForMouseMovement(
@@ -1088,6 +1146,8 @@ public actor CaptureManager: CaptureProtocol {
         )
         let redactionReason = frame.metadata.redactionReason
         let preservedDisplayID = frame.metadata.displayID != 0 ? frame.metadata.displayID : frontmostMetadata.displayID
+        let preservedDisplayStableID = frame.metadata.displayStableID ?? frontmostMetadata.displayStableID
+        let preservedDisplayName = frame.metadata.displayName ?? frontmostMetadata.displayName
         let captureTrigger = frame.metadata.captureTrigger ?? Self.storedCaptureTrigger(for: trigger)
 
         let enrichedMetadata: FrameMetadata
@@ -1099,7 +1159,9 @@ public actor CaptureManager: CaptureProtocol {
                 browserURL: frame.metadata.browserURL ?? frontmostMetadata.browserURL,
                 redactionReason: redactionReason,
                 captureTrigger: captureTrigger,
-                displayID: preservedDisplayID
+                displayID: preservedDisplayID,
+                displayStableID: preservedDisplayStableID,
+                displayName: preservedDisplayName
             )
         } else {
             enrichedMetadata = FrameMetadata(
@@ -1109,7 +1171,9 @@ public actor CaptureManager: CaptureProtocol {
                 browserURL: nil,
                 redactionReason: redactionReason,
                 captureTrigger: captureTrigger,
-                displayID: preservedDisplayID
+                displayID: preservedDisplayID,
+                displayStableID: preservedDisplayStableID,
+                displayName: preservedDisplayName
             )
         }
 

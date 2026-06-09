@@ -25,6 +25,7 @@ public actor SegmentWriterImpl: SegmentWriter {
     private var encoderInitialized = false
     private var cancelled = false
     private var lastFrameTime: Date?
+    private var displayStableID: String?
 
     init(
         segmentID: VideoSegmentID,
@@ -53,6 +54,7 @@ public actor SegmentWriterImpl: SegmentWriter {
         if !encoderInitialized {
             frameWidth = frame.width
             frameHeight = frame.height
+            displayStableID = frame.metadata.displayStableID
 
             // Write directly to output file (no encryption at file level)
             try await encoder.initialize(
@@ -111,7 +113,8 @@ public actor SegmentWriterImpl: SegmentWriter {
             fileSizeBytes: size,
             relativePath: relativePath,
             width: frameWidth,
-            height: frameHeight
+            height: frameHeight,
+            displayStableID: displayStableID
         )
     }
 

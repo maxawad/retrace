@@ -33,13 +33,28 @@ actor DisplayMonitor {
 
         let mainDisplayID = CGMainDisplayID()
         let displays = content.displays.map { display in
-            DisplayInfo(
+            let displayName = getDisplayName(for: display.displayID)
+            let vendorNumber = CGDisplayVendorNumber(display.displayID)
+            let modelNumber = CGDisplayModelNumber(display.displayID)
+            let serialNumber = CGDisplaySerialNumber(display.displayID)
+            return DisplayInfo(
                 id: display.displayID,
                 width: display.width,
                 height: display.height,
                 scaleFactor: getScaleFactor(for: display.displayID),
                 isMain: display.displayID == mainDisplayID,
-                name: getDisplayName(for: display.displayID)
+                name: displayName,
+                stableID: DisplayIdentity.stableID(
+                    vendorNumber: vendorNumber,
+                    modelNumber: modelNumber,
+                    serialNumber: serialNumber,
+                    width: display.width,
+                    height: display.height,
+                    name: displayName
+                ),
+                vendorNumber: vendorNumber,
+                modelNumber: modelNumber,
+                serialNumber: serialNumber
             )
         }
 

@@ -103,6 +103,10 @@ public struct DisplayInfo: Sendable, Identifiable, Equatable {
     public let scaleFactor: Double  // Retina scale
     public let isMain: Bool
     public let name: String?
+    public let stableID: String?
+    public let vendorNumber: UInt32?
+    public let modelNumber: UInt32?
+    public let serialNumber: UInt32?
 
     public init(
         id: UInt32,
@@ -110,7 +114,11 @@ public struct DisplayInfo: Sendable, Identifiable, Equatable {
         height: Int,
         scaleFactor: Double,
         isMain: Bool,
-        name: String? = nil
+        name: String? = nil,
+        stableID: String? = nil,
+        vendorNumber: UInt32? = nil,
+        modelNumber: UInt32? = nil,
+        serialNumber: UInt32? = nil
     ) {
         self.id = id
         self.width = width
@@ -118,10 +126,29 @@ public struct DisplayInfo: Sendable, Identifiable, Equatable {
         self.scaleFactor = scaleFactor
         self.isMain = isMain
         self.name = name
+        self.stableID = stableID
+        self.vendorNumber = vendorNumber
+        self.modelNumber = modelNumber
+        self.serialNumber = serialNumber
     }
 
     public var nativeWidth: Int { Int(Double(width) * scaleFactor) }
     public var nativeHeight: Int { Int(Double(height) * scaleFactor) }
+
+    public var identity: DisplayIdentity? {
+        guard let stableID else { return nil }
+        return DisplayIdentity(
+            stableID: stableID,
+            runtimeDisplayID: id,
+            name: name,
+            vendorNumber: vendorNumber,
+            modelNumber: modelNumber,
+            serialNumber: serialNumber,
+            width: width,
+            height: height,
+            isMain: isMain
+        )
+    }
 }
 
 /// Capture statistics
