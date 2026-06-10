@@ -4161,8 +4161,14 @@ public class SimpleTimelineViewModel: ObservableObject {
         Log.debug("[DataSourceChange] Clearing search results", category: .ui)
         searchViewModel.clearSearchResults()
 
-        // Clear filter state and cache
+        // Clear user-visible filter state and cache, but keep the timeline's
+        // hidden display scope so multi-monitor windows do not fall back to
+        // global activity after a data-source refresh.
+        let displayScope = filterCriteria.selectedDisplayStableIDs ?? pendingFilterCriteria.selectedDisplayStableIDs
         filterCriteria = .none
+        pendingFilterCriteria = .none
+        filterCriteria.selectedDisplayStableIDs = displayScope
+        pendingFilterCriteria.selectedDisplayStableIDs = displayScope
         clearCachedFilterCriteria()
         Log.debug("[DataSourceChange] Cleared filter state and cache", category: .ui)
 
@@ -8718,6 +8724,18 @@ public class SimpleTimelineViewModel: ObservableObject {
             let hasActiveFilters = filterCriteria.hasActiveFilters
             let newestLoadedFrameIsRecent = isNewestLoadedFrameRecent(now: refreshFrameDataCurrentDate())
 
+            if requiresFullReloadOnNextRefresh {
+                requiresFullReloadOnNextRefresh = false
+                if navigateToNewest {
+                    await loadMostRecentFrame(refreshPresentation: refreshPresentation)
+                } else if let timestamp = currentTimestamp {
+                    await reloadFramesAroundTimestamp(timestamp, refreshPresentation: refreshPresentation)
+                } else {
+                    await loadMostRecentFrame(refreshPresentation: refreshPresentation)
+                }
+                return
+            }
+
             if !navigateToNewest, currentIndex < frames.count, !hasActiveFilters {
                 let isNearLive = newestLoadedFrameIsRecent &&
                     framesFromNewest < Self.nearLiveEdgeFrameThreshold
@@ -8734,18 +8752,6 @@ public class SimpleTimelineViewModel: ObservableObject {
                 shouldNavigateToNewest = navigateToNewest
             } else {
                 shouldNavigateToNewest = navigateToNewest
-            }
-
-            if requiresFullReloadOnNextRefresh {
-                requiresFullReloadOnNextRefresh = false
-                if shouldNavigateToNewest {
-                    await loadMostRecentFrame(refreshPresentation: refreshPresentation)
-                } else if let timestamp = currentTimestamp {
-                    await reloadFramesAroundTimestamp(timestamp, refreshPresentation: refreshPresentation)
-                } else {
-                    await loadMostRecentFrame(refreshPresentation: refreshPresentation)
-                }
-                return
             }
 
             // Check if there are newer frames available
