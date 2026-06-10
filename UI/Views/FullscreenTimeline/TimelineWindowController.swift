@@ -336,6 +336,26 @@ public class TimelineWindowController: NSObject {
             !appHidden
     }
 
+    nonisolated static func shouldMovePreparedTimelineForActiveDisplayChange(
+        presentationState: PresentationState,
+        windowExists: Bool,
+        windowVisible: Bool,
+        windowMiniaturized: Bool,
+        windowAlphaValue: CGFloat,
+        appHidden: Bool,
+        isHiding: Bool
+    ) -> Bool {
+        guard !isHiding else { return false }
+        guard presentationState == .hidden else { return false }
+        return !isActuallyVisible(
+            windowExists: windowExists,
+            windowVisible: windowVisible,
+            windowMiniaturized: windowMiniaturized,
+            windowAlphaValue: windowAlphaValue,
+            appHidden: appHidden
+        )
+    }
+
     nonisolated static func shouldApplyDeferredCoordinatorTimelineVisible(
         requestedVisible: Bool,
         requestGeneration: UInt64,
@@ -1329,6 +1349,23 @@ public class TimelineWindowController: NSObject {
 
     /// Handle active display change - move hidden window to new screen
     @objc private func handleDisplayChange(_ notification: Notification) {
+        let snapshot = currentVisibilitySnapshot
+        guard Self.shouldMovePreparedTimelineForActiveDisplayChange(
+            presentationState: presentationState,
+            windowExists: snapshot.windowExists,
+            windowVisible: snapshot.windowVisible,
+            windowMiniaturized: snapshot.windowMiniaturized,
+            windowAlphaValue: snapshot.windowAlphaValue,
+            appHidden: snapshot.appHidden,
+            isHiding: isHiding
+        ) else {
+            Log.debug(
+                "[TIMELINE-MULTI-DISPLAY] Ignoring active display change while timeline is presented state=\(presentationState.rawValue) actualVisible=\(snapshot.isActuallyVisible)",
+                category: .ui
+            )
+            return
+        }
+
         moveWindowToMouseScreen()
     }
 

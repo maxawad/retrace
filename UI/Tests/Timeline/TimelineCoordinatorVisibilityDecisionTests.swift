@@ -80,4 +80,46 @@ final class TimelineCoordinatorVisibilityDecisionTests: XCTestCase {
             )
         )
     }
+
+    func testMovesPreparedTimelineForDisplayChangeOnlyWhenHidden() {
+        XCTAssertTrue(
+            TimelineWindowController.shouldMovePreparedTimelineForActiveDisplayChange(
+                presentationState: .hidden,
+                windowExists: true,
+                windowVisible: false,
+                windowMiniaturized: false,
+                windowAlphaValue: 0,
+                appHidden: false,
+                isHiding: false
+            )
+        )
+    }
+
+    func testDoesNotMoveVisibleTimelineForActiveDisplayChange() {
+        XCTAssertFalse(
+            TimelineWindowController.shouldMovePreparedTimelineForActiveDisplayChange(
+                presentationState: .visible,
+                windowExists: true,
+                windowVisible: true,
+                windowMiniaturized: false,
+                windowAlphaValue: 1,
+                appHidden: false,
+                isHiding: false
+            )
+        )
+    }
+
+    func testDoesNotMoveActuallyVisibleTimelineEvenIfStateIsStaleHidden() {
+        XCTAssertFalse(
+            TimelineWindowController.shouldMovePreparedTimelineForActiveDisplayChange(
+                presentationState: .hidden,
+                windowExists: true,
+                windowVisible: true,
+                windowMiniaturized: false,
+                windowAlphaValue: 1,
+                appHidden: false,
+                isHiding: false
+            )
+        )
+    }
 }
