@@ -52,7 +52,6 @@ extension SettingsView {
     var privacySettings: some View {
         VStack(alignment: .leading, spacing: 20) {
             appLevelRedactionCard
-                .zIndex(excludedAppsPopoverShown ? 50 : 0)
             windowLevelRedactionCard
             phraseLevelRedactionCard
             quickDeleteCard
@@ -80,10 +79,6 @@ extension SettingsView {
                         alignment: .leading,
                         spacing: 8
                     ) {
-                        ExcludedAppsAddButton(isOpen: excludedAppsPopoverShown) {
-                            excludedAppsPopoverShown.toggle()
-                        }
-
                         ExcludedAppsChooseButton {
                             showAppPickerMultiple { apps in
                                 addExcludedApps(apps)
@@ -96,44 +91,6 @@ extension SettingsView {
                             }
                         }
                     }
-                    .overlay(alignment: .topLeading) {
-                        if excludedAppsPopoverShown {
-                            ZStack(alignment: .topLeading) {
-                                Color.black.opacity(0.001)
-                                    .ignoresSafeArea()
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        excludedAppsPopoverShown = false
-                                    }
-
-                                AppsFilterPopover(
-                                    apps: installedAppsForExcludedRedaction,
-                                    otherApps: otherAppsForExcludedRedaction,
-                                    selectedApps: Set(excludedApps.map(\.bundleID)),
-                                    filterMode: .include,
-                                    allowMultiSelect: true,
-                                    showAllOption: false,
-                                    onSelectApp: { bundleID in
-                                        toggleExcludedRedactionApp(bundleID)
-                                    },
-                                    onFilterModeChange: nil,
-                                    onDismiss: {
-                                        excludedAppsPopoverShown = false
-                                    }
-                                )
-                                .fixedSize(horizontal: false, vertical: true)
-                                .offset(y: 42)
-                                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .topLeading)))
-                            }
-                            .zIndex(120)
-                        }
-                    }
-                    .onExitCommand {
-                        if excludedAppsPopoverShown {
-                            excludedAppsPopoverShown = false
-                        }
-                    }
-                    .zIndex(excludedAppsPopoverShown ? 80 : 0)
                 }
                 .padding(12)
                 .background(
@@ -145,9 +102,6 @@ extension SettingsView {
                         .stroke(Color.white.opacity(0.06), lineWidth: 1)
                 )
             }
-        }
-        .task {
-            loadExcludedAppsForRedaction()
         }
     }
 

@@ -211,9 +211,6 @@ public struct SettingsView: View {
     @AppStorage("ocrAppFilterMode", store: settingsStore) var ocrAppFilterMode: OCRAppFilterMode = SettingsDefaults.ocrAppFilterMode
     @AppStorage("ocrFilteredApps", store: settingsStore) var ocrFilteredAppsString = SettingsDefaults.ocrFilteredApps
     @AppStorage("autoMaxOCR", store: settingsStore) var autoMaxOCR = SettingsDefaults.autoMaxOCR
-    @State var excludedAppsPopoverShown = false
-    @State var installedAppsForExcludedRedaction: [(bundleID: String, name: String)] = []
-    @State var otherAppsForExcludedRedaction: [(bundleID: String, name: String)] = []
     @State var ocrFilteredAppsPopoverShown = false
     @State var installedAppsForOCR: [(bundleID: String, name: String)] = []
     @State var otherAppsForOCR: [(bundleID: String, name: String)] = []

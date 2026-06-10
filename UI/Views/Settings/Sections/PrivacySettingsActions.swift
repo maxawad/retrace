@@ -60,60 +60,6 @@ extension SettingsView {
 // MARK: - Excluded Apps Management
 
 extension SettingsView {
-    func loadExcludedAppsForRedaction() {
-        Task {
-            let installed = await Task.detached(priority: .utility) {
-                AppNameResolver.shared.getInstalledApps()
-                    .map { (bundleID: $0.bundleID, name: $0.name) }
-                    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            }.value
-
-            let installedBundleIDs = Set(installed.map(\.bundleID))
-            await MainActor.run {
-                installedAppsForExcludedRedaction = installed
-            }
-
-            do {
-                let historyBundleIDs = try await coordinatorWrapper.coordinator.getDistinctAppBundleIDs()
-                let otherBundleIDs = historyBundleIDs.filter { !installedBundleIDs.contains($0) }
-                let resolvedApps = await Task.detached(priority: .utility) {
-                    AppNameResolver.shared.resolveAll(bundleIDs: otherBundleIDs)
-                        .map { (bundleID: $0.bundleID, name: $0.name) }
-                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                }.value
-
-                await MainActor.run {
-                    otherAppsForExcludedRedaction = resolvedApps
-                }
-            } catch {
-                Log.error("[SettingsView] Failed to load additional apps for app-level redaction: \(error)", category: .ui)
-            }
-        }
-    }
-
-    func toggleExcludedRedactionApp(_ bundleID: String?) {
-        guard let bundleID else { return }
-
-        var apps = excludedApps
-        if let index = apps.firstIndex(where: { $0.bundleID == bundleID }) {
-            apps.remove(at: index)
-        } else {
-            let name =
-                installedAppsForExcludedRedaction.first(where: { $0.bundleID == bundleID })?.name ??
-                otherAppsForExcludedRedaction.first(where: { $0.bundleID == bundleID })?.name ??
-                bundleID
-            apps.append(
-                ExcludedAppInfo(
-                    bundleID: bundleID,
-                    name: name,
-                    iconPath: nil
-                )
-            )
-        }
-
-        saveExcludedApps(apps)
-    }
-
     func saveExcludedApps(_ apps: [ExcludedAppInfo]) {
         if let data = try? JSONEncoder().encode(apps),
            let string = String(data: data, encoding: .utf8) {
