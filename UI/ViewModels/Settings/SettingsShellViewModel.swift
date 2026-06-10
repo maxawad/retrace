@@ -197,7 +197,7 @@ final class SettingsShellViewModel: ObservableObject {
         SettingsSearchEntry(id: "storage.retentionPolicy", tab: .storage, cardTitle: "Retention Policy", cardIcon: "calendar.badge.clock",
             searchableText: ["retention policy", "keep recordings", "auto delete", "retention days", "data retention", "forever", "export", "import", "data export"]),
         SettingsSearchEntry(id: "privacy.excludedApps", tab: .privacy, cardTitle: "App Level Redaction", cardIcon: "app.badge.checkmark",
-            searchableText: ["excluded apps", "block app", "privacy", "apps not recorded", "app exclusion"]),
+            searchableText: ["excluded apps", "ignore app", "block app", "privacy", "apps not recorded", "app exclusion", "screensaver"]),
         SettingsSearchEntry(id: "privacy.frameRedaction", tab: .privacy, cardTitle: "Window Level Redaction", cardIcon: "eye.slash",
             searchableText: ["redaction", "window title", "browser url", "black frames", "privacy rules", "incognito", "browsing", "automation", "vivaldi", "sigmaos"]),
         SettingsSearchEntry(id: "privacy.phraseRedaction", tab: .privacy, cardTitle: "Phrase Level Redaction", cardIcon: "text.viewfinder",

@@ -66,7 +66,7 @@ extension SettingsView {
     var appLevelRedactionCard: some View {
         ModernSettingsCard(title: "App Level Redaction", icon: "app.badge.checkmark") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Exclude entire apps from capture.")
+                Text("Redact selected apps. Full-screen excluded apps pause capture so they do not fill the timeline.")
                     .font(.retraceCaption)
                     .foregroundColor(.retraceSecondary)
 
@@ -82,6 +82,12 @@ extension SettingsView {
                     ) {
                         ExcludedAppsAddButton(isOpen: excludedAppsPopoverShown) {
                             excludedAppsPopoverShown.toggle()
+                        }
+
+                        ExcludedAppsChooseButton {
+                            showAppPickerMultiple { apps in
+                                addExcludedApps(apps)
+                            }
                         }
 
                         ForEach(excludedApps) { app in

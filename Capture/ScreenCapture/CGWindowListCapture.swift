@@ -494,6 +494,7 @@ public actor CGWindowListCapture {
 
             let ownerName = windowInfo[kCGWindowOwnerName as String] as? String ?? "unknown"
             let windowName = windowInfo[kCGWindowName as String] as? String ?? ""
+            let isTopVisibleWindow = visibleWindowContext == nil
 
             var ownerPID: pid_t?
             var bundleID: String?
@@ -513,7 +514,7 @@ public actor CGWindowListCapture {
                 captureBlockReason = Self.captureBlockReason(ownerName: ownerName, bundleID: bundleID)
             }
 
-            if visibleWindowContext == nil {
+            if isTopVisibleWindow {
                 visibleWindowContext = VisibleWindowContext(
                     appBundleID: bundleID,
                     appName: appDisplayName(ownerName: ownerName, bundleID: bundleID),
@@ -532,12 +533,23 @@ public actor CGWindowListCapture {
 
             // Check 1: Excluded app bundle IDs (check by bundle ID from PID)
             if let bundleID, config.excludedAppBundleIDs.contains(bundleID) {
+                let displayName = appDisplayName(ownerName: ownerName, bundleID: bundleID)
+                if isTopVisibleWindow,
+                   captureBlockReason == nil,
+                   let windowBounds = windowBounds(from: windowInfo),
+                   let excludedAppBlockReason = Self.excludedAppCaptureBlockReason(
+                       bundleID: bundleID,
+                       windowBounds: windowBounds,
+                       displayBounds: displayBounds
+                   ) {
+                    captureBlockReason = excludedAppBlockReason
+                }
+
                 Log.info("[Exclusion] EXCLUDING app window: '\(windowName)' from \(ownerName) (bundleID: \(bundleID))", category: .capture)
                 excludedIDs.insert(windowID)
                 redactedWindowIDs.insert(windowID)
                 if redactionContextByWindowID[windowID] == nil {
                     redactionWindowOrder.append(windowID)
-                    let displayName = appDisplayName(ownerName: ownerName, bundleID: bundleID)
                     redactionContextByWindowID[windowID] = RedactionWindowContext(
                         reason: "Excluded app: \(displayName)",
                         appBundleID: bundleID,
@@ -933,6 +945,31 @@ public actor CGWindowListCapture {
         }
 
         return nil
+    }
+
+    nonisolated static func excludedAppCaptureBlockReason(
+        bundleID: String,
+        windowBounds: CGRect,
+        displayBounds: CGRect,
+        coverageThreshold: CGFloat = 0.85
+    ) -> String? {
+        let displayArea = displayBounds.width * displayBounds.height
+        guard displayArea > 0 else { return nil }
+
+        let visibleBounds = windowBounds.intersection(displayBounds)
+        guard !visibleBounds.isNull,
+              visibleBounds.width > 0,
+              visibleBounds.height > 0 else {
+            return nil
+        }
+
+        let coverage = (visibleBounds.width * visibleBounds.height) / displayArea
+        guard coverage >= coverageThreshold else { return nil }
+
+        let normalizedBundleID = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedBundleID.isEmpty else { return nil }
+
+        return "excluded-app-visible:\(normalizedBundleID)"
     }
 
     private func summarizeRedaction(
